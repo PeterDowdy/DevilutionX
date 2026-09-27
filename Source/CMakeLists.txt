@@ -228,11 +228,21 @@ target_link_dependencies(libdevilutionx_cl2_to_clx
   libdevilutionx_endian_write
 )
 
+add_devilutionx_object_library(libdevilutionx_hd
+  engine/render/hd.cpp
+)
+target_link_dependencies(libdevilutionx_hd PUBLIC
+  DevilutionX::SDL
+  SDL2::SDL2_image
+  libdevilutionx_log
+)
+
 add_devilutionx_object_library(libdevilutionx_clx_render
   engine/render/clx_render.cpp
 )
 target_link_dependencies(libdevilutionx_clx_render PUBLIC
   DevilutionX::SDL
+  libdevilutionx_hd
   libdevilutionx_light_render
   libdevilutionx_palette_blending
   libdevilutionx_strings
@@ -351,6 +361,7 @@ add_devilutionx_object_library(libdevilutionx_dun_render
 target_link_dependencies(libdevilutionx_dun_render
   PUBLIC
   DevilutionX::SDL
+  libdevilutionx_hd
   libdevilutionx_light_render
   libdevilutionx_surface
   libdevilutionx_palette_blending
@@ -462,6 +473,7 @@ add_devilutionx_object_library(libdevilutionx_load_cel
 target_link_dependencies(libdevilutionx_load_cel
   PUBLIC
   tl
+  libdevilutionx_hd
   PRIVATE
   libdevilutionx_strings
 )
@@ -482,6 +494,7 @@ add_devilutionx_object_library(libdevilutionx_load_cl2
 target_link_dependencies(libdevilutionx_load_cl2
   PUBLIC
   tl
+  libdevilutionx_hd
   libdevilutionx_endian_write
   PRIVATE
   libdevilutionx_strings

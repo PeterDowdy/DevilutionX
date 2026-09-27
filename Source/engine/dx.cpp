@@ -23,6 +23,7 @@
 
 #include "controls/control_mode.hpp"
 #include "controls/plrctrls.h"
+#include "engine/render/hd.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "headless_mode.hpp"
 #include "init.hpp"
@@ -114,6 +115,7 @@ void LimitFrameRate()
 
 void dx_init()
 {
+	hd::Init();
 #ifndef USE_SDL1
 	SDL_RaiseWindow(ghMainWnd);
 	SDL_ShowWindow(ghMainWnd);
@@ -176,6 +178,7 @@ void CreateBackBuffer()
 	// time the global `palette` is changed. No need to do anything here as
 	// the global `palette` doesn't have any colors set yet.
 #endif
+	hd::SetTarget(PalSurface);
 }
 
 void BltFast(SDL_Rect *srcRect, SDL_Rect *dstRect)
@@ -311,8 +314,10 @@ void RenderPresent()
 #else
 		if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255) <= -1) ErrSdl();
 		if (SDL_RenderClear(renderer) <= -1) ErrSdl();
-		if (SDL_UpdateTexture(texture.get(), nullptr, surface->pixels, surface->pitch) <= -1) ErrSdl();
-		if (SDL_RenderCopy(renderer, texture.get(), nullptr, nullptr) <= -1) ErrSdl();
+		if (!hd::Present(renderer, PalSurface)) {
+			if (SDL_UpdateTexture(texture.get(), nullptr, surface->pixels, surface->pitch) <= -1) ErrSdl();
+			if (SDL_RenderCopy(renderer, texture.get(), nullptr, nullptr) <= -1) ErrSdl();
+		}
 #endif
 
 		if (ControlMode == ControlTypes::VirtualGamepad) {
@@ -330,6 +335,7 @@ void RenderPresent()
 			LimitFrameRate();
 		}
 	} else {
+		hd::Present(nullptr, PalSurface); // no renderer to show it, but dumps still work
 		if (ControlMode == ControlTypes::VirtualGamepad) {
 			RenderVirtualGamepad(surface);
 		}

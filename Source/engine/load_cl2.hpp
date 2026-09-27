@@ -11,6 +11,7 @@
 #include "appfat.h"
 #include "engine/clx_sprite.hpp"
 #include "engine/load_file.hpp"
+#include "engine/render/hd.hpp"
 #include "mpq/mpq_common.hpp"
 #include "utils/endian_read.hpp"
 #include "utils/endian_write.hpp"
@@ -72,7 +73,10 @@ std::expected<OwnedClxSpriteSheet, std::string> LoadMultipleCl2Sheet(tl::functio
 #ifdef UNPACKED_MPQS
 	return OwnedClxSpriteSheet { std::move(data), static_cast<uint16_t>(count) };
 #else
-	return Cl2ToClx(std::move(data), accumulatedSize, frameWidth).sheet();
+	OwnedClxSpriteSheet sheet = Cl2ToClx(std::move(data), accumulatedSize, frameWidth).sheet();
+	for (size_t i = 0; i < count; ++i)
+		hd::RegisterSpriteList(paths[i].data(), 0, ClxSpriteSheet { sheet }[i]); // one file per list
+	return sheet;
 #endif
 }
 
