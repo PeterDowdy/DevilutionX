@@ -168,8 +168,9 @@ DVL_ALWAYS_INLINE void ExtractFoliageTransparentSquare(uint8_t *&dst, const uint
 				++solidRun;
 			} else {
 				if (solidRun != 0) {
+					// `src` is already past this transparent pixel, which ends the run
 					*dst++ = solidRun;
-					std::memcpy(dst, src - solidRun, solidRun);
+					std::memcpy(dst, src - solidRun - 1, solidRun);
 					dst += solidRun;
 					solidRun = 0;
 				}
