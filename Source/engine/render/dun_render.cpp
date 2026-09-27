@@ -18,6 +18,7 @@
 #include "appfat.h"
 #include "engine/point.hpp"
 #include "engine/render/blit_impl.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/render/overlapped_memset.hpp"
 #include "levels/dun_tile.hpp"
 #include "options.h"
@@ -123,6 +124,7 @@ template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::FullyDark>(uint8_t *DVL_RESTRICT dst, [[maybe_unused]] const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	FillBytesUpTo32(dst, n, 0);
+	hd::Mark(dst, src, n);
 }
 
 template <>
@@ -133,6 +135,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::FullyLit>(u
 #else
 	BlitFillDirect(dst, n, DBGCOLOR);
 #endif
+	hd::Mark(dst, src, n);
 }
 
 template <>
@@ -143,6 +146,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::PartiallyLi
 #else
 	BlitFillDirect(dst, n, tbl[DBGCOLOR]);
 #endif
+	hd::Mark(dst, src, n);
 }
 
 template <>
@@ -153,6 +157,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::PerPixel>(u
 #else
 	BlitFillWithLightmap(dst, n, DBGCOLOR, *lightmap);
 #endif
+	hd::Mark(dst, src, n);
 }
 
 #ifndef DEBUG_RENDER_COLOR
@@ -163,24 +168,28 @@ template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyDark>(uint8_t *DVL_RESTRICT dst, [[maybe_unused]] const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitFillBlended(dst, n, 0);
+	hd::Mark(dst, src, n);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitPixelsBlended(dst, src, n);
+	hd::Mark(dst, src, n);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PartiallyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitPixelsBlendedWithMap(dst, src, n, tbl);
+	hd::Mark(dst, src, n);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PerPixel>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, const Lightmap *lightmap)
 {
 	BlitPixelsBlendedWithLightmap(dst, src, n, *lightmap);
+	hd::Mark(dst, src, n);
 }
 #else // DEBUG_RENDER_COLOR
 template <LightType Light>
@@ -209,8 +218,10 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparentOrOpaqueN(uint8_t 
 {
 	if constexpr (!Transparent && Light == LightType::FullyDark) {
 		BlitFillDirect(dst, N, 0);
+		hd::Mark(dst, src, N);
 	} else if constexpr (!Transparent && Light == LightType::FullyLit) {
 		BlitPixelsDirect(dst, src, N);
+		hd::Mark(dst, src, N);
 	} else {
 		RenderLineTransparentOrOpaque<Light, Transparent>(dst, src, N, tbl, lightmap);
 	}

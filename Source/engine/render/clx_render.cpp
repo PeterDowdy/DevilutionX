@@ -11,6 +11,7 @@
 
 #include "engine/point.hpp"
 #include "engine/render/blit_impl.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/surface.hpp"
 #include "utils/attributes.h"
 #include "utils/clx_decode.hpp"
@@ -422,6 +423,7 @@ void RenderClxOutline(const Surface &out, Point position, ClxSprite sprite, uint
 
 void ClxApplyTrans(ClxSprite sprite, const uint8_t *trn)
 {
+	hd::BeforeRecolour(sprite, trn);
 	// A bit of a hack but this is the only place in the code where we need mutable sprites.
 	auto *dst = const_cast<uint8_t *>(sprite.pixelData());
 	uint16_t remaining = sprite.pixelDataSize();
@@ -443,6 +445,7 @@ void ClxApplyTrans(ClxSprite sprite, const uint8_t *trn)
 			}
 		}
 	}
+	hd::AfterRecolour(sprite);
 }
 
 } // namespace
@@ -584,34 +587,94 @@ std::string ClxDescribe(ClxSprite clx)
 }
 #endif // DEBUG_CLX
 
+namespace {
+/** A blit that also records what it wrote in the HD layer's provenance plane. */
+template <typename BlitFn>
+struct HdMarked {
+	BlitFn blit;
+
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
+	{
+		blit(length, dst, src);
+		hd::Mark(dst, src, length);
+	}
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
+	{
+		blit(length, color, dst);
+		hd::MarkFill(dst, color, length);
+	}
+};
+
+/** Draws a recoloured sprite from its original pixels through the recolour, so the art's own indices are recorded. */
+template <typename BlitFn>
+struct HdRecoloured {
+	BlitFn blit;
+	const uint8_t *trn;
+
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
+	{
+		uint8_t recoloured[256];
+		for (unsigned done = 0; done < length;) {
+			const unsigned n = std::min(length - done, 256U);
+			for (unsigned i = 0; i < n; ++i)
+				recoloured[i] = trn[src[done + i]];
+			blit(n, dst + done, recoloured);
+			hd::Mark(dst + done, src + done, n);
+			done += n;
+		}
+	}
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
+	{
+		blit(length, trn[color], dst);
+		hd::MarkFill(dst, color, length);
+	}
+};
+
+template <typename BlitFn>
+void DrawClx(const Surface &out, Point position, ClxSprite clx, BlitFn blitFn)
+{
+	if (hd::Enabled()) {
+		const hd::SpriteScope scope(out, position, clx);
+		if (scope.original != nullptr) {
+			DoRenderBackwards(out, position, scope.original, clx.pixelDataSize(), clx.width(), clx.height(), HdRecoloured<BlitFn> { blitFn, scope.trn });
+			return;
+		}
+		DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), HdMarked<BlitFn> { blitFn });
+		return;
+	}
+	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), blitFn);
+}
+
+} // namespace
+
 void ClxDraw(const Surface &out, Point position, ClxSprite clx)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitDirect {});
+	DrawClx(out, position, clx, BlitDirect {});
 }
 
 void ClxDrawTRN(const Surface &out, Point position, ClxSprite clx, const uint8_t *trn)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitWithMap { trn });
+	DrawClx(out, position, clx, BlitWithMap { trn });
 }
 
 void ClxDrawWithLightmap(const Surface &out, Point position, ClxSprite clx, const Lightmap &lightmap)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitWithLightmap { lightmap });
+	DrawClx(out, position, clx, BlitWithLightmap { lightmap });
 }
 
 void ClxDrawBlended(const Surface &out, Point position, ClxSprite clx)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitBlended {});
+	DrawClx(out, position, clx, BlitBlended {});
 }
 
 void ClxDrawBlendedTRN(const Surface &out, Point position, ClxSprite clx, const uint8_t *trn)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitBlendedWithMap { trn });
+	DrawClx(out, position, clx, BlitBlendedWithMap { trn });
 }
 
 void ClxDrawBlendedWithLightmap(const Surface &out, Point position, ClxSprite clx, const Lightmap &lightmap)
 {
-	DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), BlitBlendedWithLightmap { lightmap });
+	DrawClx(out, position, clx, BlitBlendedWithLightmap { lightmap });
 }
 
 void ClxDrawOutline(const Surface &out, uint8_t col, Point position, ClxSprite clx)
