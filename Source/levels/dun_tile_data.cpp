@@ -12,9 +12,11 @@
 
 #include <ankerl/unordered_dense.h>
 
+#include "engine/assets.hpp"
 #include "engine/clx_sprite.hpp"
 #include "engine/load_file.hpp"
 #include "engine/point.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/world_tile.hpp"
 #include "levels/dun_tile.hpp"
 #include "levels/gendung_defs.hpp"
@@ -91,6 +93,21 @@ std::unique_ptr<uint16_t[]> LoadMinData(size_t &tileCount)
 		return LoadFileInMem<uint16_t>("nlevels\\l5data\\l5.min", &tileCount);
 	default:
 		app_fatal("LoadMinData");
+	}
+}
+
+/** The studio's name for the tileset LoadMinData loads (see pixel-hd-studio games/diablo/catalog.py). */
+std::string_view HdTilesetName()
+{
+	switch (leveltype) {
+	case DTYPE_TOWN: return FindAsset("nlevels\\towndata\\town.min").ok() ? "hftown" : "town";
+	case DTYPE_CATHEDRAL: return "l1";
+	case DTYPE_CATACOMBS: return "l2";
+	case DTYPE_CAVES: return "l3";
+	case DTYPE_HELL: return "l4";
+	case DTYPE_CRYPT: return "l5";
+	case DTYPE_NEST: return "l6";
+	default: return "";
 	}
 }
 
@@ -178,6 +195,7 @@ void SetDungeonMicros(std::unique_ptr<std::byte[]> &dungeonCels, uint_fast8_t &m
 
 	size_t tileCount;
 	const std::unique_ptr<uint16_t[]> levelPieces = LoadMinData(tileCount);
+	hd::SetTileset(HdTilesetName());
 
 	ankerl::unordered_dense::map<uint16_t, DunFrameInfo> frameToTypeMap;
 	frameToTypeMap.reserve(4096);

@@ -11,6 +11,7 @@
 #endif
 
 #include "appfat.h"
+#include "engine/render/hd.hpp"
 #include "mpq/mpq_common.hpp"
 #include "utils/status_macros.hpp"
 #include "utils/str_cat.hpp"
@@ -36,7 +37,9 @@ std::expected<OwnedClxSpriteListOrSheet, std::string> LoadCelListOrSheetWithStat
 #ifdef DEBUG_CEL_TO_CL2_SIZE
 	std::cout << path;
 #endif
-	return CelToClx(data.get(), size, widthOrWidths);
+	OwnedClxSpriteListOrSheet result = CelToClx(data.get(), size, widthOrWidths);
+	hd::RegisterSprites(path, ClxSpriteListOrSheet { result });
+	return result;
 #endif
 }
 
