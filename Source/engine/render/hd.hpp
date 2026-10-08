@@ -16,6 +16,10 @@
  * Pack layout (a folder, given by DEVILUTIONX_HD_PACK):
  *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line
  *   sprite/<mpq path without ext>/<group>.<frame>.png   a CEL/CL2 frame, any size (sampled proportionally)
+ *   sprite/<mpq path without ext>@<swap>/<group>.<frame>.png   the frame in a palette swap of its own: a monster
+ *                                             type's TRN ("@bluered"), a unique monster's on top ("@bluered+rcrn",
+ *                                             or "@+eth" on a type without one). Drawn as it is where the pack has
+ *                                             it; otherwise the frame without the swap is graded as usual.
  *   tile/<tileset>/<pillar>.png               a level pillar (.min entry): 64 x 32*rows original pixels
  *   palettes/<mpq path>.pal                   768-byte RGB reference palettes
  */
@@ -82,21 +86,33 @@ void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList lis
 void BeforeRecolour(ClxSprite sprite, const uint8_t *trn);
 void AfterRecolour(ClxSprite sprite);
 
+/** While it lives, names the TRN that ClxApplyTrans applies (a monster type's: "bluered"), for "@<swap>" art. */
+class NamedRecolour {
+public:
+	explicit NamedRecolour(std::string_view name);
+	~NamedRecolour();
+};
+
+/** Names a TRN that sprites are drawn through (a unique monster's: "rcrn"), for "@<swap>+<name>" art. */
+void NameTrn(const uint8_t *trn, std::string_view name);
+
 /** The 8-bit surface the game renders into (the one to track). */
 void SetTarget(SDL_Surface *palSurface);
 
 /** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
 void SetTileset(std::string_view name);
 
-/** Tracks the pixels a CLX sprite draw writes (when it draws into the PalSurface). */
+/** Tracks the pixels a CLX sprite draw writes (when it draws into the PalSurface). ``drawTrn``: the TRN the draw maps through. */
 class SpriteScope {
 public:
-	SpriteScope(const Surface &out, Point position, ClxSprite clx);
+	SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn = nullptr);
 	~SpriteScope();
 
 	/** For a recoloured sprite with HD art: its pixel data before recolouring, and the recolour. */
 	const uint8_t *original = nullptr;
 	const uint8_t *trn = nullptr;
+	/** For art of the draw's own swap: record the pixels' indices through ``drawTrn``, which the art already shows. */
+	const uint8_t *marks = nullptr;
 };
 
 /** Tracks the pixels of one pillar: ``bottomLeft`` is the bottom-left pixel of its lowest pieces. */

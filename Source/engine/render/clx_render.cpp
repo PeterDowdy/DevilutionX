@@ -630,11 +630,41 @@ struct HdRecoloured {
 	}
 };
 
+/** A blit through a TRN that the sprite's HD art already shows (a unique monster's): records the indices through it. */
 template <typename BlitFn>
-void DrawClx(const Surface &out, Point position, ClxSprite clx, BlitFn blitFn)
+struct HdMapMarked {
+	BlitFn blit;
+	const uint8_t *map;
+
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
+	{
+		blit(length, dst, src);
+		uint8_t mapped[256];
+		for (unsigned done = 0; done < length;) {
+			const unsigned n = std::min(length - done, 256U);
+			for (unsigned i = 0; i < n; ++i)
+				mapped[i] = map[src[done + i]];
+			hd::Mark(dst + done, mapped, n);
+			done += n;
+		}
+	}
+	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
+	{
+		blit(length, color, dst);
+		hd::MarkFill(dst, map[color], length);
+	}
+};
+
+/** ``drawTrn``: the TRN ``blitFn`` maps through, if any, so the HD layer can use art of that swap. */
+template <typename BlitFn>
+void DrawClx(const Surface &out, Point position, ClxSprite clx, BlitFn blitFn, const uint8_t *drawTrn = nullptr)
 {
 	if (hd::Enabled()) {
-		const hd::SpriteScope scope(out, position, clx);
+		const hd::SpriteScope scope(out, position, clx, drawTrn);
+		if (scope.marks != nullptr) {
+			DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), HdMapMarked<BlitFn> { blitFn, scope.marks });
+			return;
+		}
 		if (scope.original != nullptr) {
 			DoRenderBackwards(out, position, scope.original, clx.pixelDataSize(), clx.width(), clx.height(), HdRecoloured<BlitFn> { blitFn, scope.trn });
 			return;
@@ -654,7 +684,7 @@ void ClxDraw(const Surface &out, Point position, ClxSprite clx)
 
 void ClxDrawTRN(const Surface &out, Point position, ClxSprite clx, const uint8_t *trn)
 {
-	DrawClx(out, position, clx, BlitWithMap { trn });
+	DrawClx(out, position, clx, BlitWithMap { trn }, trn);
 }
 
 void ClxDrawWithLightmap(const Surface &out, Point position, ClxSprite clx, const Lightmap &lightmap)
@@ -669,7 +699,7 @@ void ClxDrawBlended(const Surface &out, Point position, ClxSprite clx)
 
 void ClxDrawBlendedTRN(const Surface &out, Point position, ClxSprite clx, const uint8_t *trn)
 {
-	DrawClx(out, position, clx, BlitBlendedWithMap { trn });
+	DrawClx(out, position, clx, BlitBlendedWithMap { trn }, trn);
 }
 
 void ClxDrawBlendedWithLightmap(const Surface &out, Point position, ClxSprite clx, const Lightmap &lightmap)

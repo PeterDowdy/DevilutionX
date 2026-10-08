@@ -55,6 +55,7 @@ set(standalone_tests
   data_file_test
   file_util_test
   format_int_test
+  hd_test
   ini_test
   mod_identity_test
   palette_blending_test
@@ -150,6 +151,7 @@ target_link_dependencies(dun_render_benchmark
 )
 target_link_dependencies(file_util_test PRIVATE libdevilutionx_file_util app_fatal_for_testing)
 target_link_dependencies(format_int_test PRIVATE libdevilutionx_format_int language_for_testing)
+target_link_dependencies(hd_test PRIVATE libdevilutionx_clx_render libdevilutionx_surface DevilutionX::SDL app_fatal_for_testing language_for_testing)
 target_link_dependencies(ini_test PRIVATE libdevilutionx_ini app_fatal_for_testing)
 target_link_dependencies(mod_identity_test PRIVATE libdevilutionx_mod_identity app_fatal_for_testing)
 target_include_directories(mod_identity_test PRIVATE "${PROJECT_SOURCE_DIR}/3rdParty/PicoSHA2")

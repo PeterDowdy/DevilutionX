@@ -11,6 +11,7 @@
 #include <thread>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #ifdef USE_SDL3
@@ -49,10 +50,25 @@ struct HdImage {
 };
 
 struct SpriteEntry {
-	std::string key; ///< "sprite/<path>/<group>.<frame>.png"
+	std::string stem;  ///< "sprite/<path>"
+	std::string frame; ///< "/<group>.<frame>.png"
 	uint32_t check;
-	std::vector<uint8_t> original; ///< pixel data before ClxApplyTrans, when it was recoloured
+	std::string recolour;          ///< the named TRN ClxApplyTrans applied ("bluered"), if any
+	bool swapArt = false;          ///< the pack has this frame's "@<recolour>" art, which already shows it
+	bool pending = false;          ///< between BeforeRecolour and AfterRecolour
+	std::vector<uint8_t> original; ///< pixel data before ClxApplyTrans, when its own art is graded through it
 	std::array<uint8_t, 256> trn;
+
+	/** The pack file of this frame in a swap ("bluered", "bluered+rcrn", "+eth"), or itself for none. */
+	[[nodiscard]] std::string Key(std::string_view swap) const
+	{
+		return swap.empty() ? stem + frame : stem + "@" + std::string(swap) + frame;
+	}
+};
+
+struct NamedTrn {
+	std::string name;
+	uint32_t check;
 };
 
 bool Active = false;
@@ -62,6 +78,9 @@ std::unordered_map<std::string, std::string> Manifest; ///< image file -> palett
 std::vector<HdImage> Images(1);                         ///< id 0: none
 std::unordered_map<std::string, uint32_t> ImageIds;     ///< image file -> id (0: no image)
 std::unordered_map<const uint8_t *, SpriteEntry> Sprites;
+std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any frame, its own or a swap's
+std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying, while a NamedRecolour lives
+std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
 
 SDL_Surface *Target = nullptr; ///< the PalSurface
@@ -90,6 +109,33 @@ uint32_t Checksum(ClxSprite clx)
 	for (uint32_t i = 0; i < std::min<uint32_t>(64, clx.pixelDataSize()); ++i)
 		mix(p[i]);
 	return h;
+}
+
+uint32_t TrnChecksum(const uint8_t *trn)
+{
+	uint32_t h = 2166136261U;
+	for (int i = 0; i < 256; ++i)
+		h = (h ^ trn[i]) * 16777619U;
+	return h;
+}
+
+/** "Monsters\Zombie\Bluered" -> "bluered": a TRN's name in pack paths. */
+std::string TrnStem(std::string_view name)
+{
+	const size_t slash = name.find_last_of("\\/");
+	std::string out(slash == std::string_view::npos ? name : name.substr(slash + 1));
+	for (char &c : out)
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	return out;
+}
+
+/** The name of a TRN that draws pass, when it was named and hasn't changed since. */
+std::string_view TrnName(const uint8_t *trn)
+{
+	if (trn == nullptr) return {};
+	const auto found = TrnNames.find(trn);
+	if (found == TrnNames.end() || found->second.check != TrnChecksum(trn)) return {};
+	return found->second.name;
 }
 
 /** "Monsters\Zombie\ZombieW.CL2" -> "monsters/zombie/zombiew" */
@@ -350,6 +396,13 @@ void Init()
 		}
 	}
 	Scale = std::clamp(Scale, 1, 8);
+	for (const auto &[file, palette] : Manifest) {
+		if (file.rfind("sprite/", 0) != 0) continue;
+		std::string stem = file.substr(0, file.rfind('/'));
+		const size_t swap = stem.find('@', stem.rfind('/'));
+		if (swap != std::string::npos) stem.resize(swap);
+		ArtStems.insert(std::move(stem));
+	}
 	if (const char *dump = std::getenv("DEVILUTIONX_HD_DUMP"); dump != nullptr) {
 		DumpDir = dump;
 		const char *every = std::getenv("DEVILUTIONX_HD_DUMP_EVERY");
@@ -375,12 +428,12 @@ void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites)
 void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list)
 {
 	if (!Active) return;
-	const std::string stem = "sprite/" + NormalizePath(path) + "/" + std::to_string(group) + ".";
+	const std::string stem = "sprite/" + NormalizePath(path);
+	const bool art = ArtStems.count(stem) != 0;
 	for (uint32_t f = 0; f < list.numSprites(); ++f) {
-		std::string key = stem + std::to_string(f) + ".png";
 		const ClxSprite sprite = list[f];
-		if (Manifest.count(key) != 0)
-			Sprites[sprite.pixelData()] = { std::move(key), Checksum(sprite) };
+		if (art)
+			Sprites[sprite.pixelData()] = { stem, "/" + std::to_string(group) + "." + std::to_string(f) + ".png", Checksum(sprite) };
 		else
 			Sprites.erase(sprite.pixelData()); // a buffer reused at the same address
 	}
@@ -392,6 +445,16 @@ void BeforeRecolour(ClxSprite sprite, const uint8_t *trn)
 	const auto found = Sprites.find(sprite.pixelData());
 	if (found == Sprites.end() || found->second.check != Checksum(sprite)) return;
 	SpriteEntry &entry = found->second;
+	entry.pending = true;
+	if (entry.swapArt) { // recoloured again: its swap's art no longer shows it
+		entry.swapArt = false;
+		entry.recolour.clear();
+	} else if (!RecolourName.empty() && entry.recolour.empty() && entry.original.empty()) {
+		entry.recolour = RecolourName;
+		entry.swapArt = Manifest.count(entry.Key(RecolourName)) != 0;
+		if (entry.swapArt) return; // drawn from the recoloured pixels as they are
+	}
+	if (Manifest.count(entry.Key({})) == 0) return; // no art of its own to grade through the recolour
 	if (entry.original.empty()) {
 		entry.original.assign(sprite.pixelData(), sprite.pixelData() + sprite.pixelDataSize());
 		std::copy_n(trn, 256, entry.trn.begin());
@@ -405,8 +468,26 @@ void AfterRecolour(ClxSprite sprite)
 {
 	if (!Active) return;
 	const auto found = Sprites.find(sprite.pixelData());
-	if (found != Sprites.end() && !found->second.original.empty())
+	if (found != Sprites.end() && found->second.pending) {
 		found->second.check = Checksum(sprite);
+		found->second.pending = false;
+	}
+}
+
+NamedRecolour::NamedRecolour(std::string_view name)
+{
+	RecolourName = TrnStem(name);
+}
+
+NamedRecolour::~NamedRecolour()
+{
+	RecolourName.clear();
+}
+
+void NameTrn(const uint8_t *trn, std::string_view name)
+{
+	if (!Active || trn == nullptr) return;
+	TrnNames[trn] = { TrnStem(name), TrnChecksum(trn) };
 }
 
 void SetTarget(SDL_Surface *palSurface)
@@ -419,16 +500,26 @@ void SetTileset(std::string_view name)
 	Tileset = name;
 }
 
-SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx)
+SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn)
 {
 	uint32_t image = 0;
 	if (Active) {
 		const auto found = Sprites.find(clx.pixelData());
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
-			image = ImageId(found->second.key, clx.width(), clx.height());
-			if (image != 0 && !found->second.original.empty()) {
-				original = found->second.original.data();
-				trn = found->second.trn.data();
+			const SpriteEntry &entry = found->second;
+			// The most specific art the pack has: the draw's own swap on top of the sprite's, the sprite's swap, itself
+			if (const std::string_view unique = TrnName(drawTrn); !unique.empty()) {
+				image = ImageId(entry.Key(entry.recolour + "+" + std::string(unique)), clx.width(), clx.height());
+				if (image != 0) marks = drawTrn;
+			}
+			if (image == 0 && entry.swapArt)
+				image = ImageId(entry.Key(entry.recolour), clx.width(), clx.height());
+			if (image == 0) {
+				image = ImageId(entry.Key({}), clx.width(), clx.height());
+				if (image != 0 && !entry.original.empty()) {
+					original = entry.original.data();
+					trn = entry.trn.data();
+				}
 			}
 		}
 	}

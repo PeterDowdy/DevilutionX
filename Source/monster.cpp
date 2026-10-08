@@ -51,6 +51,7 @@
 #include "engine/points_in_rectangle_range.hpp"
 #include "engine/random.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/sound.h"
 #include "engine/sound_position.hpp"
 #include "engine/world_tile.hpp"
@@ -177,6 +178,7 @@ void InitMonsterTRN(CMonster &monst)
 	LoadFileInMem(path, colorTranslations);
 	std::replace(colorTranslations.begin(), colorTranslations.end(), 255, 0);
 
+	const hd::NamedRecolour hdSwap(monst.data().trnFile); // HD art of the swap, where the pack has it
 	const size_t numAnims = GetNumAnims(monst.data());
 	for (size_t i = 0; i < numAnims; i++) {
 		if (i == 1 && IsAnyOf(monst.type, MT_COUNSLR, MT_MAGISTR, MT_CABALIST, MT_ADVOCATE)) {
@@ -3319,6 +3321,7 @@ std::expected<void, std::string> InitTRNForUniqueMonster(Monster &monster)
 	char filestr[64];
 	*BufCopy(filestr, R"(monsters\monsters\)", UniqueMonstersData[static_cast<size_t>(monster.uniqueType)].mTrnName, ".trn") = '\0';
 	ASSIGN_OR_RETURN(monster.uniqueMonsterTRN, LoadFileInMemWithStatus<uint8_t>(filestr));
+	hd::NameTrn(monster.uniqueMonsterTRN.get(), UniqueMonstersData[static_cast<size_t>(monster.uniqueType)].mTrnName);
 	return {};
 }
 
@@ -3566,6 +3569,11 @@ std::expected<void, std::string> InitMonsterGFX(CMonster &monsterType, MonsterSp
 		auto *animSpritesData = reinterpret_cast<uint8_t *>(&monsterType.animData[begin]);
 		const uint16_t numLists = GetNumListsFromClxListOrSheetBuffer(animSpritesData, end - begin);
 		monsterType.anims[i].sprites = ClxSpriteListOrSheet { animSpritesData, numLists };
+		if (hd::Enabled()) { // the files were read together, so the loader couldn't say which file each sprite is
+			char path[64];
+			*BufCopy(path, "monsters\\", monsterData.spritePath(), std::string_view(&Animletter[i], 1)) = '\0';
+			hd::RegisterSprites(path, *monsterType.anims[i].sprites);
+		}
 		++j;
 	}
 
