@@ -34,6 +34,7 @@
 #endif
 
 #include "DiabloUI/diabloui.h"
+#include "engine/render/hd.hpp"
 #include "config.h"
 #include "control/control.hpp"
 #include "controls/controller.h"
@@ -155,6 +156,23 @@ Size GetPreferredWindowSize()
 	AdjustToScreenGeometry(windowSize);
 	return windowSize;
 }
+
+#ifndef USE_SDL1
+/** With an HD pack the window is the pack's scale times the game's size, so its art shows pixel for pixel: as large as the desktop allows (the title bar and panels need room). */
+Size WindowSizeForHdPack(Size windowSize)
+{
+#ifndef USE_SDL3
+	if (!*GetOptions().Graphics.upscale || *GetOptions().Graphics.fullscreen) return windowSize;
+	int factor = hd::PackScale();
+	if (factor <= 1) return windowSize;
+	SDL_DisplayMode mode;
+	if (SDL_GetDesktopDisplayMode(0, &mode) != 0) return windowSize;
+	factor = std::min({ factor, mode.w * 95 / 100 / windowSize.width, mode.h * 90 / 100 / windowSize.height });
+	if (factor > 1) return { windowSize.width * factor, windowSize.height * factor };
+#endif
+	return windowSize;
+}
+#endif
 
 const auto OptionChangeHandlerResolution = (GetOptions().Graphics.resolution.SetValueChangedCallback(ResizeWindow), true);
 const auto OptionChangeHandlerFullscreen = (GetOptions().Graphics.fullscreen.SetValueChangedCallback(SetFullscreenMode), true);
@@ -634,7 +652,8 @@ bool SpawnWindow(const char *lpWindowName)
 		ghMainWnd = SDL_CreateWindow(lpWindowName, windowSize.width, windowSize.height, flags);
 	}
 #else
-	ghMainWnd = SDL_CreateWindow(lpWindowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, windowSize.width, windowSize.height, flags);
+	const Size createSize = WindowSizeForHdPack(windowSize);
+	ghMainWnd = SDL_CreateWindow(lpWindowName, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, createSize.width, createSize.height, flags);
 #endif
 
 #if defined(DEVILUTIONX_DISPLAY_PIXELFORMAT)
@@ -848,7 +867,7 @@ void SetFullscreenMode()
 
 	if (!*GetOptions().Graphics.fullscreen) {
 		SDL_RestoreWindow(ghMainWnd); // Avoid window being maximized before resizing
-		const Size windowSize = GetPreferredWindowSize();
+		const Size windowSize = WindowSizeForHdPack(GetPreferredWindowSize());
 		SDL_SetWindowSize(ghMainWnd, windowSize.width, windowSize.height);
 	}
 	if (!*GetOptions().Graphics.upscale) {
@@ -900,8 +919,10 @@ void ResizeWindow()
 			SDL_RestoreWindow(ghMainWnd); // Avoid window being maximized before resizing
 	}
 
-	if (!trueFullscreen)
-		SDL_SetWindowSize(ghMainWnd, windowSize.width, windowSize.height);
+	if (!trueFullscreen) {
+		const Size hdSize = WindowSizeForHdPack(windowSize);
+		SDL_SetWindowSize(ghMainWnd, hdSize.width, hdSize.height);
+	}
 #endif
 
 	ReinitializeRenderer();

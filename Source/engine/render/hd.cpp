@@ -372,6 +372,21 @@ bool Enabled()
 	return Active;
 }
 
+int PackScale()
+{
+	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
+	if (!Supported || dir == nullptr || *dir == '\0') return 1;
+	std::ifstream index(std::string(dir) + "/hd.txt");
+	std::string line;
+	while (std::getline(index, line)) {
+		std::istringstream words(line);
+		std::string kind;
+		int scale = 0;
+		if (words >> kind >> scale && kind == "scale") return std::clamp(scale, 1, 8);
+	}
+	return 1;
+}
+
 void Init()
 {
 	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");

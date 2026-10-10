@@ -75,6 +75,9 @@ bool Enabled();
 /** Loads the pack named by DEVILUTIONX_HD_PACK, if any. */
 void Init();
 
+/** The pack's scale ("scale N" in its hd.txt), read without loading it; 1 when there is no pack. For sizing the window before Init. */
+int PackScale();
+
 /** Remembers which file, group and frame each sprite of a freshly loaded CEL/CL2 file is. ``path`` may carry an extension. */
 void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites);
 void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list);
