@@ -30,6 +30,8 @@ const uint8_t *TrackBase = nullptr;
 uint32_t TrackImage = 0;
 int16_t TrackLeft = 0;
 int16_t TrackTop = 0;
+uint8_t TrackFree = 0;
+uint32_t TrackSerial = 0;
 
 namespace {
 
@@ -47,6 +49,7 @@ struct HdImage {
 	std::vector<uint32_t> px;     ///< 0xAARRGGBB
 	std::array<uint8_t, 768> ref; ///< the palette the art was authored against
 	bool hasRef = false;
+	std::vector<uint8_t> reach; ///< per original pixel: the art is opaque somewhere in its block (free silhouettes; made when first needed)
 };
 
 struct SpriteEntry {
@@ -88,6 +91,15 @@ std::vector<PixelProvenance> Plane;
 int PlanePitch = 0;
 int PlaneHeight = 0;
 
+/**
+ * Free silhouettes: under a sprite draw whose art is free, the pixels it may touch are copied here before it draws, so
+ * that art which is transparent over a pixel the sprite drew can show what was behind (one layer deep).
+ */
+bool FreeSilhouette = false;
+std::vector<PixelProvenance> BehindProv;
+std::vector<uint8_t> BehindIdx;
+uint32_t NextSerial = 0;
+
 std::vector<uint32_t> Frame;
 SDL_Texture *FrameTexture = nullptr;
 int TextureW = 0;
@@ -97,6 +109,7 @@ std::string DumpDir;
 int DumpEvery = 0;
 bool DumpIds = false; ///< also dump which image each pixel came from (ids-*.png, and ids.txt: id and file)
 int PresentCount = 0;
+int LastDumpStep = -1;
 
 uint32_t Checksum(ClxSprite clx)
 {
@@ -202,6 +215,10 @@ bool EnsurePlane()
 		PlanePitch = Target->pitch;
 		PlaneHeight = Target->h;
 		Plane.assign(static_cast<size_t>(PlanePitch) * PlaneHeight, PixelProvenance {});
+		if (FreeSilhouette) {
+			BehindProv.assign(Plane.size(), PixelProvenance {});
+			BehindIdx.assign(Plane.size(), 0);
+		}
 	}
 	return true;
 }
@@ -211,27 +228,136 @@ struct SavedTrack {
 	const uint8_t *base;
 	uint32_t image;
 	int16_t left, top;
+	uint8_t free;
+	uint32_t serial;
 };
 SavedTrack Saved;
 
-void Begin(const Surface &out, uint32_t image, int left, int top)
+/** The draw in progress, when its art has a free silhouette: where it may draw (the art's rectangle, clipped to the surface). */
+struct FreeDraw {
+	bool on = false;
+	uint32_t image = 0;
+	int left = 0, top = 0;
+	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+FreeDraw Free;
+
+void Begin(const Surface &out, uint32_t image, int left, int top, bool free = false)
 {
-	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop };
+	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackSerial };
+	Free.on = false;
 	if (!Active || out.surface != Target || !EnsurePlane()) return;
 	TrackPlane = Plane.data();
 	TrackBase = static_cast<const uint8_t *>(Target->pixels);
 	TrackImage = image;
 	TrackLeft = static_cast<int16_t>(left);
 	TrackTop = static_cast<int16_t>(top);
+	TrackFree = 0;
+	TrackSerial = ++NextSerial;
+	if (!free || !FreeSilhouette || image == 0 || Images[image].w == 0 || BehindProv.size() != Plane.size()) return;
+	const HdImage &img = Images[image];
+	const int x0 = std::max({ left, out.region.x, 0 });
+	const int y0 = std::max({ top, out.region.y, 0 });
+	const int x1 = std::min({ left + img.loW, out.region.x + out.region.w, Target->w });
+	const int y1 = std::min({ top + img.loH, out.region.y + out.region.h, Target->h });
+	if (x0 >= x1 || y0 >= y1) return;
+	Free = { true, image, left, top, x0, y0, x1, y1 };
+	TrackFree = 1;
+	const auto *pixels = static_cast<const uint8_t *>(Target->pixels);
+	for (int y = y0; y < y1; ++y) {
+		const size_t at = static_cast<size_t>(y) * PlanePitch + x0;
+		std::memcpy(&BehindIdx[at], pixels + at, x1 - x0);
+		std::copy_n(&Plane[at], x1 - x0, &BehindProv[at]);
+	}
+}
+
+/** Per original pixel: whether the art is opaque (alpha 32 or more) anywhere in the pixel's block. */
+void ComputeReach(HdImage &img)
+{
+	const int n = Scale;
+	img.reach.assign(static_cast<size_t>(img.loW) * img.loH, 0);
+	for (int ly = 0; ly < img.loH; ++ly) {
+		for (int lx = 0; lx < img.loW; ++lx) {
+			uint32_t best = 0;
+			for (int j = 0; j < n; ++j) {
+				const int v = std::min(img.h - 1, (ly * n + j) * img.h / (img.loH * n));
+				for (int i = 0; i < n; ++i) {
+					const int u = std::min(img.w - 1, (lx * n + i) * img.w / (img.loW * n));
+					best = std::max(best, img.px[static_cast<size_t>(v) * img.w + u] >> 24);
+				}
+			}
+			img.reach[static_cast<size_t>(ly) * img.loW + lx] = best >= 32 ? 1 : 0;
+		}
+	}
+}
+
+/**
+ * Draws the art's pixels outside the sprite's footprint into the PalSurface: each takes the index, and so the lighting,
+ * of the nearest pixel the sprite drew (preferring one that isn't near black), and is recorded as the sprite's own.
+ */
+void ExtendFootprint()
+{
+	HdImage &img = Images[Free.image];
+	if (img.reach.empty()) ComputeReach(img);
+	auto *pixels = static_cast<uint8_t *>(Target->pixels);
+	constexpr int Radius = 6;
+	struct Extension {
+		size_t at;
+		const PixelProvenance *donor;
+	};
+	std::vector<Extension> extend;
+	for (int y = Free.y0; y < Free.y1; ++y) {
+		for (int x = Free.x0; x < Free.x1; ++x) {
+			const size_t at = static_cast<size_t>(y) * PlanePitch + x;
+			if (Plane[at].serial == TrackSerial) continue; // the sprite drew it
+			if (img.reach[static_cast<size_t>(y - Free.top) * img.loW + (x - Free.left)] == 0) continue;
+			const PixelProvenance *best = nullptr;
+			int bestScore = 1000;
+			for (int r = 1; r <= Radius && r < bestScore; ++r) {
+				for (int dy = -r; dy <= r; ++dy) {
+					for (int dx = -r; dx <= r; ++dx) {
+						if (std::max(std::abs(dx), std::abs(dy)) != r) continue;
+						const int qx = x + dx, qy = y + dy;
+						if (qx < Free.x0 || qx >= Free.x1 || qy < Free.y0 || qy >= Free.y1) continue;
+						const PixelProvenance &q = Plane[static_cast<size_t>(qy) * PlanePitch + qx];
+						if (q.serial != TrackSerial) continue;
+						const uint8_t *ref = &img.ref[q.source * 3];
+						const bool dark = img.hasRef && ref[0] + ref[1] + ref[2] < 90;
+						const int score = r + (dark ? 3 : 0);
+						if (score < bestScore) {
+							best = &q;
+							bestScore = score;
+						}
+					}
+				}
+			}
+			if (best != nullptr) extend.push_back({ at, best });
+		}
+	}
+	// Applied after the scan, so that pixels added here are not taken as donors in turn
+	std::vector<PixelProvenance> donors;
+	donors.reserve(extend.size());
+	for (const Extension &e : extend)
+		donors.push_back(*e.donor);
+	for (size_t i = 0; i < extend.size(); ++i) {
+		pixels[extend[i].at] = donors[i].written;
+		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 1, TrackSerial };
+	}
 }
 
 void End()
 {
+	if (Free.on) {
+		ExtendFootprint();
+		Free.on = false;
+	}
 	TrackPlane = Saved.plane;
 	TrackBase = Saved.base;
 	TrackImage = Saved.image;
 	TrackLeft = Saved.left;
 	TrackTop = Saved.top;
+	TrackFree = Saved.free;
+	TrackSerial = Saved.serial;
 }
 
 /**
@@ -261,6 +387,56 @@ void FillBlock(uint32_t *dst, int outW, int n, uint32_t color)
 		std::fill_n(dst + static_cast<size_t>(j) * outW, n, color);
 }
 
+/**
+ * Draws the HD block of the pixel (``x``, ``y``), live colour ``c``, from ``img`` into ``dst`` (n rows of n, ``outW`` apart), graded
+ * by the live colour. Where the art is not opaque it blends over ``under`` (n x n, packed) or, without it, over ``c``.
+ * False when the pixel is outside the art.
+ */
+bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL_Color c, uint32_t *dst, int outW, const uint32_t *under)
+{
+	const int n = Scale;
+	const int sx = x - p.left;
+	const int sy = y - p.top;
+	if (sx < 0 || sy < 0 || sx >= img.loW || sy >= img.loH) return false;
+	const bool graded = img.hasRef;
+	const uint8_t *ref = &img.ref[p.source * 3];
+	const ChannelGrade gr = graded ? ChannelGrade(ref[0], c.r) : ChannelGrade(0, 0);
+	const ChannelGrade gg = graded ? ChannelGrade(ref[1], c.g) : ChannelGrade(0, 0);
+	const ChannelGrade gb = graded ? ChannelGrade(ref[2], c.b) : ChannelGrade(0, 0);
+	int us[8];
+	for (int i = 0; i < n; ++i)
+		us[i] = std::min(img.w - 1, (sx * n + i) * img.w / (img.loW * n));
+	for (int j = 0; j < n; ++j) {
+		const int v = std::min(img.h - 1, (sy * n + j) * img.h / (img.loH * n));
+		const uint32_t *row = &img.px[static_cast<size_t>(v) * img.w];
+		uint32_t *out = dst + static_cast<size_t>(j) * outW;
+		for (int i = 0; i < n; ++i) {
+			const uint32_t s = row[us[i]];
+			const uint32_t a = s >> 24;
+			uint32_t r = (s >> 16) & 0xFF, g = (s >> 8) & 0xFF, b = s & 0xFF;
+			if (graded) {
+				r = gr.apply(r);
+				g = gg.apply(g);
+				b = gb.apply(b);
+			}
+			if (a < 255) {
+				uint32_t br = c.r, bg = c.g, bb = c.b;
+				if (under != nullptr) {
+					const uint32_t u = under[j * n + i];
+					br = (u >> 16) & 0xFF;
+					bg = (u >> 8) & 0xFF;
+					bb = u & 0xFF;
+				}
+				r = (r * a + br * (255 - a)) / 255;
+				g = (g * a + bg * (255 - a)) / 255;
+				b = (b * a + bb * (255 - a)) / 255;
+			}
+			out[i] = 0xFF000000U | (r << 16) | (g << 8) | b;
+		}
+	}
+	return true;
+}
+
 void ComposeRows(SDL_Surface *pal, int y0, int y1)
 {
 	const int w = pal->w;
@@ -269,7 +445,7 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 	const SDL_Color *live = pal->format->palette->colors;
 	const auto *pixels = static_cast<const uint8_t *>(pal->pixels);
 	const bool havePlane = PlanePitch == pal->pitch && PlaneHeight == pal->h;
-	int us[8];
+	const bool haveBehind = havePlane && BehindProv.size() == Plane.size();
 	for (int y = y0; y < y1; ++y) {
 		for (int x = 0; x < w; ++x) {
 			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
@@ -283,40 +459,19 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 				FillBlock(dst, outW, n, flat);
 				continue;
 			}
-			const int sx = x - p->left;
-			const int sy = y - p->top;
-			if (sx < 0 || sy < 0 || sx >= img->loW || sy >= img->loH) {
-				FillBlock(dst, outW, n, flat);
+			if (p->free != 0 && haveBehind) {
+				// Free silhouette: the art blends over what was behind the sprite here, not over the sprite's own pixel
+				uint32_t under[64];
+				const uint8_t behind = BehindIdx[at];
+				const SDL_Color bc = live[behind];
+				const PixelProvenance &bp = BehindProv[at];
+				const HdImage *behindImg = bp.image != 0 && bp.written == behind ? &Images[bp.image] : nullptr;
+				if (behindImg == nullptr || behindImg->w == 0 || !SampleBlock(*behindImg, bp, x, y, bc, under, n, nullptr))
+					FillBlock(under, n, n, 0xFF000000U | (bc.r << 16) | (bc.g << 8) | bc.b);
+				if (!SampleBlock(*img, *p, x, y, c, dst, outW, under)) FillBlock(dst, outW, n, flat);
 				continue;
 			}
-			const bool graded = img->hasRef;
-			const uint8_t *ref = &img->ref[p->source * 3];
-			const ChannelGrade gr = graded ? ChannelGrade(ref[0], c.r) : ChannelGrade(0, 0);
-			const ChannelGrade gg = graded ? ChannelGrade(ref[1], c.g) : ChannelGrade(0, 0);
-			const ChannelGrade gb = graded ? ChannelGrade(ref[2], c.b) : ChannelGrade(0, 0);
-			for (int i = 0; i < n; ++i)
-				us[i] = std::min(img->w - 1, (sx * n + i) * img->w / (img->loW * n));
-			for (int j = 0; j < n; ++j) {
-				const int v = std::min(img->h - 1, (sy * n + j) * img->h / (img->loH * n));
-				const uint32_t *row = &img->px[static_cast<size_t>(v) * img->w];
-				uint32_t *out = dst + static_cast<size_t>(j) * outW;
-				for (int i = 0; i < n; ++i) {
-					const uint32_t s = row[us[i]];
-					const uint32_t a = s >> 24;
-					uint32_t r = (s >> 16) & 0xFF, g = (s >> 8) & 0xFF, b = s & 0xFF;
-					if (graded) {
-						r = gr.apply(r);
-						g = gg.apply(g);
-						b = gb.apply(b);
-					}
-					if (a < 255) { // blend over the pixel's own colour
-						r = (r * a + c.r * (255 - a)) / 255;
-						g = (g * a + c.g * (255 - a)) / 255;
-						b = (b * a + c.b * (255 - a)) / 255;
-					}
-					out[i] = 0xFF000000U | (r << 16) | (g << 8) | b;
-				}
-			}
+			if (!SampleBlock(*img, *p, x, y, c, dst, outW, nullptr)) FillBlock(dst, outW, n, flat);
 		}
 	}
 }
@@ -336,11 +491,14 @@ void Compose(SDL_Surface *pal)
 		w.join();
 }
 
-void Dump(SDL_Surface *pal)
+void Dump(SDL_Surface *pal, int dumpStep)
 {
-	if (DumpDir.empty() || DumpEvery <= 0 || PresentCount % DumpEvery != 0) return;
+	if (DumpDir.empty() || DumpEvery <= 0) return;
+	const int step = dumpStep >= 0 ? dumpStep : PresentCount;
+	if (step % DumpEvery != 0 || step == LastDumpStep) return;
+	LastDumpStep = step;
 	char name[32];
-	std::snprintf(name, sizeof(name), "%05d.png", PresentCount / DumpEvery);
+	std::snprintf(name, sizeof(name), "%05d.png", step / DumpEvery);
 	SDL_Surface *hdSurface = SDL_CreateRGBSurfaceWithFormatFrom(Frame.data(), pal->w * Scale, pal->h * Scale, 32,
 	    pal->w * Scale * 4, SDL_PIXELFORMAT_ARGB8888);
 	if (hdSurface != nullptr) {
@@ -398,12 +556,17 @@ void Init()
 		return;
 	}
 	std::string line;
+	FreeSilhouette = false;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
 		std::string kind;
 		words >> kind;
 		if (kind == "scale") {
 			words >> Scale;
+		} else if (kind == "silhouette") {
+			std::string mode;
+			words >> mode;
+			FreeSilhouette = mode == "free";
 		} else if (kind == "image") {
 			std::string file, palette;
 			words >> file >> palette;
@@ -425,7 +588,7 @@ void Init()
 		DumpIds = std::getenv("DEVILUTIONX_HD_DUMP_IDS") != nullptr;
 	}
 	Active = true;
-	LogInfo("HD: pack {} ({} images, {}x)", PackDir, Manifest.size(), Scale);
+	LogInfo("HD: pack {} ({} images, {}x{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "");
 }
 
 void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites)
@@ -538,7 +701,7 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 			}
 		}
 	}
-	Begin(out, image, out.region.x + position.x, out.region.y + position.y - clx.height() + 1);
+	Begin(out, image, out.region.x + position.x, out.region.y + position.y - clx.height() + 1, true);
 }
 
 SpriteScope::~SpriteScope()
@@ -559,12 +722,12 @@ PillarScope::~PillarScope()
 	End();
 }
 
-bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface)
+bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)
 {
 	if (!Active || palSurface == nullptr || palSurface->format->palette == nullptr) return false;
 	Target = palSurface;
 	Compose(palSurface);
-	Dump(palSurface);
+	Dump(palSurface, dumpStep);
 	++PresentCount;
 	if (renderer == nullptr) return false;
 	const int w = palSurface->w * Scale;

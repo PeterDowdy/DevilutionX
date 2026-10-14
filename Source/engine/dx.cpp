@@ -23,6 +23,7 @@
 
 #include "controls/control_mode.hpp"
 #include "controls/plrctrls.h"
+#include "engine/demomode.h"
 #include "engine/render/hd.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "headless_mode.hpp"
@@ -92,6 +93,12 @@ bool CanRenderDirectlyToOutputSurface()
 	    && outputSurface->h == static_cast<int>(gnScreenHeight)
 	    && SDLC_SURFACE_BITSPERPIXEL(outputSurface) == 8;
 #endif
+}
+
+/** The demo's tick, so that frames dumped by the HD layer line up between runs; -1 outside demo playback. */
+int HdDumpStep()
+{
+	return demo::IsRunning() ? static_cast<int>(demo::SimulateMillisecondsSinceStartup() / 50) : -1;
 }
 
 /**
@@ -314,7 +321,7 @@ void RenderPresent()
 #else
 		if (SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255) <= -1) ErrSdl();
 		if (SDL_RenderClear(renderer) <= -1) ErrSdl();
-		if (!hd::Present(renderer, PalSurface)) {
+		if (!hd::Present(renderer, PalSurface, HdDumpStep())) {
 			if (SDL_UpdateTexture(texture.get(), nullptr, surface->pixels, surface->pitch) <= -1) ErrSdl();
 			if (SDL_RenderCopy(renderer, texture.get(), nullptr, nullptr) <= -1) ErrSdl();
 		}
@@ -335,7 +342,7 @@ void RenderPresent()
 			LimitFrameRate();
 		}
 	} else {
-		hd::Present(nullptr, PalSurface); // no renderer to show it, but dumps still work
+		hd::Present(nullptr, PalSurface, HdDumpStep()); // no renderer to show it, but dumps still work
 		if (ControlMode == ControlTypes::VirtualGamepad) {
 			RenderVirtualGamepad(surface);
 		}

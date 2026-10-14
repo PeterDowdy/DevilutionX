@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -139,6 +140,156 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 	SDL_FreeSurface(hd);
 	SDL_FreeSurface(pal);
 	fs::remove_all(pack);
+}
+
+/** A CLX list of one 4x4 sprite whose left column is transparent: the other three, every pixel ``Own``. */
+std::vector<uint8_t> NarrowSprite()
+{
+	std::vector<uint8_t> data = { 1, 0, 0, 0, 12, 0, 0, 0, 38, 0, 0, 0, 6, 0, 4, 0, 4, 0 };
+	for (int row = 0; row < 4; ++row)
+		data.insert(data.end(), { 1, 0xFD, Own, Own, Own });
+	return data;
+}
+
+/** One 8x8 HD image: opaque ``c`` everywhere except a transparent 2x2 hole at (2, 2) when ``hole``. */
+void WriteArtWithHole(const fs::path &pack, const std::string &file, SDL_Color c, bool hole, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+	for (int y = 0; y < 8; ++y) {
+		for (int x = 0; x < 8; ++x) {
+			const bool clear = hole && x >= 2 && x < 4 && y >= 2 && y < 4;
+			static_cast<uint32_t *>(s->pixels)[y * (s->pitch / 4) + x] = clear ? 0U : (0xFF000000U | (c.r << 16) | (c.g << 8) | c.b);
+		}
+	}
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	index << "image " << file << " palettes/test.pal\n";
+}
+
+SDL_Surface *LoadFrame(const fs::path &dump)
+{
+	for (const fs::directory_entry &entry : fs::directory_iterator(dump)) {
+		if (entry.path().filename().string().rfind("hd-", 0) != 0) continue;
+		SDL_Surface *loaded = IMG_LoadPNG(entry.path().string().c_str());
+		if (loaded == nullptr) return nullptr;
+		SDL_Surface *argb = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_ARGB8888, 0);
+		SDL_FreeSurface(loaded);
+		return argb;
+	}
+	return nullptr;
+}
+
+constexpr SDL_Color Background = { 100, 100, 100, 255 };
+constexpr SDL_Color FrontArt = { 120, 60, 60, 255 };
+constexpr SDL_Color BackArt = { 60, 120, 60, 255 };
+constexpr uint8_t BackgroundIndex = 5;
+
+/**
+ * Draws, on a surface ``width`` wide, a sprite whose left column is transparent (at lo pixels x 8..11, y 4..7), and one over another
+ * sprite with art of its own (x 16..19, y 4..7), in a pack that is ``free`` or not. The art of the first covers the whole sprite,
+ * the art of the front sprite of the second has a hole over its pixel (17, 5). ``after`` runs before the frame is presented.
+ * Returns the HD frame; the PalSurface comes back in ``palOut``.
+ */
+SDL_Surface *DrawFreeScenario(const std::string &name, bool free, int width, SDL_Surface **palOut, const std::function<void(SDL_Surface *)> &after = {})
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		if (free) index << "silhouette free\n";
+		WriteArtWithHole(pack, "sprite/" + name + "/a/0.0.png", FrontArt, false, index);
+		WriteArtWithHole(pack, "sprite/" + name + "/back/0.0.png", BackArt, false, index);
+		WriteArtWithHole(pack, "sprite/" + name + "/front/0.0.png", FrontArt, true, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+
+	// Not the size of any other test's surface, so that the provenance plane starts clean
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, width, 12, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+
+	// Sprites are found by the address of their pixel data: keep these alive and in place
+	static std::vector<uint8_t> narrow, back, front;
+	narrow = NarrowSprite();
+	back = Sprite();
+	front = Sprite();
+	hd::RegisterSpriteList(name + "\\A.CL2", 0, ClxSpriteList { narrow.data() });
+	hd::RegisterSpriteList(name + "\\Back.CL2", 0, ClxSpriteList { back.data() });
+	hd::RegisterSpriteList(name + "\\Front.CL2", 0, ClxSpriteList { front.data() });
+	ClxDraw(out, { 8, 7 }, ClxSpriteList { narrow.data() }[0]);
+	ClxDraw(out, { 16, 7 }, ClxSpriteList { back.data() }[0]);
+	ClxDraw(out, { 16, 7 }, ClxSpriteList { front.data() }[0]);
+	if (after) after(pal);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	fs::remove_all(pack);
+	*palOut = pal;
+	return frame;
+}
+
+TEST(HdTest, FreeSilhouetteDrawsOutsideTheFootprintAndRevealsWhatWasBehind)
+{
+	SDL_Surface *pal = nullptr;
+	SDL_Surface *frame = DrawFreeScenario("free", true, 40, &pal);
+	ASSERT_NE(frame, nullptr);
+	// The art covers the transparent left column of the first sprite (lo pixel (8, 4) is HD (16, 8))
+	ExpectColor(At(frame, 16, 8), FrontArt.r, FrontArt.g, FrontArt.b, "the art outside the footprint");
+	ExpectColor(At(frame, 17, 9), FrontArt.r, FrontArt.g, FrontArt.b, "the art outside the footprint, its last pixel");
+	ExpectColor(At(frame, 18, 8), FrontArt.r, FrontArt.g, FrontArt.b, "the art inside the footprint");
+	ExpectColor(At(frame, 14, 8), Background.r, Background.g, Background.b, "outside the art's rectangle");
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[4 * pal->pitch + 8], Own) << "the extension takes the nearest pixel's index";
+	// The front sprite's hole shows the back sprite's art, not the front sprite's own pixel
+	ExpectColor(At(frame, 34, 10), BackArt.r, BackArt.g, BackArt.b, "the hole shows what was behind");
+	ExpectColor(At(frame, 35, 11), BackArt.r, BackArt.g, BackArt.b, "the hole shows what was behind, its last pixel");
+	ExpectColor(At(frame, 32, 10), FrontArt.r, FrontArt.g, FrontArt.b, "the front art beside the hole");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, WithoutFreeSilhouetteArtStaysInsideTheFootprint)
+{
+	SDL_Surface *pal = nullptr;
+	SDL_Surface *frame = DrawFreeScenario("bound", false, 44, &pal);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 16, 8), Background.r, Background.g, Background.b, "no art outside the footprint");
+	ExpectColor(At(frame, 18, 8), FrontArt.r, FrontArt.g, FrontArt.b, "the art inside the footprint");
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[4 * pal->pitch + 8], BackgroundIndex) << "the PalSurface is as the game drew it";
+	const SDL_Color own = Palette()[Own];
+	ExpectColor(At(frame, 34, 10), own.r, own.g, own.b, "the hole shows the sprite's own pixel");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, FreeSilhouetteGivesWayToLaterDraws)
+{
+	SDL_Surface *pal = nullptr;
+	// Draws that don't know the HD layer overwrite an extension pixel and a pixel of the sprite after it has drawn
+	SDL_Surface *frame = DrawFreeScenario("later", true, 48, &pal, [](SDL_Surface *s) {
+		static_cast<uint8_t *>(s->pixels)[4 * s->pitch + 8] = Unique;
+		static_cast<uint8_t *>(s->pixels)[5 * s->pitch + 9] = Unique;
+	});
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color unique = Palette()[Unique];
+	ExpectColor(At(frame, 16, 8), unique.r, unique.g, unique.b, "an extension pixel overwritten later");
+	ExpectColor(At(frame, 18, 10), unique.r, unique.g, unique.b, "a sprite pixel overwritten later");
+	ExpectColor(At(frame, 18, 8), FrontArt.r, FrontArt.g, FrontArt.b, "its neighbour");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
 }
 
 } // namespace

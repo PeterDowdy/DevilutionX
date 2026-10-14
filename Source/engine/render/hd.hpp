@@ -14,7 +14,8 @@
  * authored against: that carries lighting, recolours, fades and palette cycling over to true colour.
  *
  * Pack layout (a folder, given by DEVILUTIONX_HD_PACK):
- *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line
+ *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line, and optionally
+ *                                             "silhouette free" (see below)
  *   sprite/<mpq path without ext>/<group>.<frame>.png   a CEL/CL2 frame, any size (sampled proportionally)
  *   sprite/<mpq path without ext>@<swap>/<group>.<frame>.png   the frame in a palette swap of its own: a monster
  *                                             type's TRN ("@bluered"), a unique monster's on top ("@bluered+rcrn",
@@ -22,6 +23,12 @@
  *                                             it; otherwise the frame without the swap is graded as usual.
  *   tile/<tileset>/<pillar>.png               a level pillar (.min entry): 64 x 32*rows original pixels
  *   palettes/<mpq path>.pal                   768-byte RGB reference palettes
+ *
+ * "silhouette free": sprite art is no longer bound to the footprint of the original sprite. Where it is opaque
+ * outside the footprint it is drawn there (the pixel takes the lighting of the nearest pixel of the sprite), and
+ * where it is transparent inside the footprint what was behind the sprite shows instead of the original pixel,
+ * HD art of whatever was behind included (one layer deep). Without the line, art shows only where the original
+ * sprite has pixels, and transparent art shows the original pixel. Pillars (tiles) are not affected.
  */
 
 #include <cstdint>
@@ -42,6 +49,8 @@ struct PixelProvenance {
 	int16_t top;
 	uint8_t source;  ///< the art's own colour index, before lighting, TRN or blending
 	uint8_t written; ///< the index written to the PalSurface
+	uint8_t free;    ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp)
+	uint32_t serial; ///< which draw wrote the pixel
 };
 
 /** Set while a tracked draw into the PalSurface runs: the plane, and the PalSurface pixel it starts at. */
@@ -50,6 +59,8 @@ extern const uint8_t *TrackBase;
 extern uint32_t TrackImage;
 extern int16_t TrackLeft;
 extern int16_t TrackTop;
+extern uint8_t TrackFree;
+extern uint32_t TrackSerial;
 
 /** Record ``n`` pixels just written at ``dst`` from the art indices ``src``. */
 inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
@@ -57,7 +68,7 @@ inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
 	if (TrackPlane == nullptr) return;
 	PixelProvenance *p = TrackPlane + (dst - TrackBase);
 	for (unsigned i = 0; i < n; ++i)
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i] };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackSerial };
 }
 
 /** Record ``n`` pixels just written at ``dst`` from one art index. */
@@ -66,7 +77,7 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 	if (TrackPlane == nullptr) return;
 	PixelProvenance *p = TrackPlane + (dst - TrackBase);
 	for (unsigned i = 0; i < n; ++i)
-		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i] };
+		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackSerial };
 }
 
 /** Whether an HD pack is loaded. */
@@ -128,7 +139,9 @@ public:
 /**
  * Composes the HD frame from ``palSurface`` and draws it with ``renderer`` (when not null).
  * Returns false when the HD layer is off, so the caller presents as usual.
+ * ``dumpStep``: DEVILUTIONX_HD_DUMP names its frames by this (every DUMP_EVERY steps) instead of by the count of presents. The number of presents
+ * per game tick differs from run to run, so only a number tied to the game itself (the demo's tick) lets frames of two builds be compared.
  */
-bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface);
+bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep = -1);
 
 } // namespace devilution::hd
