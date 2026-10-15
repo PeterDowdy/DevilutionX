@@ -110,6 +110,7 @@ int DumpEvery = 0;
 bool DumpIds = false; ///< also dump which image each pixel came from (ids-*.png, and ids.txt: id and file)
 int PresentCount = 0;
 int LastDumpStep = -1;
+std::string RequestedDump; ///< a frame to dump under this name at the next present, whatever DumpEvery says
 
 uint32_t Checksum(ClxSprite clx)
 {
@@ -491,21 +492,15 @@ void Compose(SDL_Surface *pal)
 		w.join();
 }
 
-void Dump(SDL_Surface *pal, int dumpStep)
+void WriteDump(SDL_Surface *pal, const std::string &name)
 {
-	if (DumpDir.empty() || DumpEvery <= 0) return;
-	const int step = dumpStep >= 0 ? dumpStep : PresentCount;
-	if (step % DumpEvery != 0 || step == LastDumpStep) return;
-	LastDumpStep = step;
-	char name[32];
-	std::snprintf(name, sizeof(name), "%05d.png", step / DumpEvery);
 	SDL_Surface *hdSurface = SDL_CreateRGBSurfaceWithFormatFrom(Frame.data(), pal->w * Scale, pal->h * Scale, 32,
 	    pal->w * Scale * 4, SDL_PIXELFORMAT_ARGB8888);
 	if (hdSurface != nullptr) {
-		IMG_SavePNG(hdSurface, (DumpDir + "/hd-" + name).c_str());
+		IMG_SavePNG(hdSurface, (DumpDir + "/hd-" + name + ".png").c_str());
 		SDL_FreeSurface(hdSurface);
 	}
-	IMG_SavePNG(pal, (DumpDir + "/low-" + name).c_str());
+	IMG_SavePNG(pal, (DumpDir + "/low-" + name + ".png").c_str());
 	if (DumpIds && PlanePitch == pal->pitch && PlaneHeight == pal->h) {
 		std::vector<uint32_t> ids(static_cast<size_t>(pal->w) * pal->h);
 		const auto *pixels = static_cast<const uint8_t *>(pal->pixels);
@@ -517,10 +512,26 @@ void Dump(SDL_Surface *pal, int dumpStep)
 			}
 		SDL_Surface *idSurface = SDL_CreateRGBSurfaceWithFormatFrom(ids.data(), pal->w, pal->h, 32, pal->w * 4, SDL_PIXELFORMAT_ARGB8888);
 		if (idSurface != nullptr) {
-			IMG_SavePNG(idSurface, (DumpDir + "/ids-" + name).c_str());
+			IMG_SavePNG(idSurface, (DumpDir + "/ids-" + name + ".png").c_str());
 			SDL_FreeSurface(idSurface);
 		}
 	}
+}
+
+void Dump(SDL_Surface *pal, int dumpStep)
+{
+	if (DumpDir.empty()) return;
+	if (!RequestedDump.empty()) {
+		WriteDump(pal, RequestedDump);
+		RequestedDump.clear();
+	}
+	if (DumpEvery <= 0) return;
+	const int step = dumpStep >= 0 ? dumpStep : PresentCount;
+	if (step % DumpEvery != 0 || step == LastDumpStep) return;
+	LastDumpStep = step;
+	char name[32];
+	std::snprintf(name, sizeof(name), "%05d", step / DumpEvery);
+	WriteDump(pal, name);
 }
 
 } // namespace
@@ -584,7 +595,7 @@ void Init()
 	if (const char *dump = std::getenv("DEVILUTIONX_HD_DUMP"); dump != nullptr) {
 		DumpDir = dump;
 		const char *every = std::getenv("DEVILUTIONX_HD_DUMP_EVERY");
-		DumpEvery = every != nullptr ? std::max(1, std::atoi(every)) : 60;
+		DumpEvery = every != nullptr ? std::max(0, std::atoi(every)) : 60;
 		DumpIds = std::getenv("DEVILUTIONX_HD_DUMP_IDS") != nullptr;
 	}
 	Active = true;
@@ -720,6 +731,11 @@ PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, 
 PillarScope::~PillarScope()
 {
 	End();
+}
+
+void RequestDump(std::string_view name)
+{
+	if (Active && !DumpDir.empty()) RequestedDump = name;
 }
 
 bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)

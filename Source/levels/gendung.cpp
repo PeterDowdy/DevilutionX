@@ -1,5 +1,6 @@
 #include "levels/gendung.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -15,6 +16,7 @@
 #include "engine/random.hpp"
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
+#include "hd_showcase.h"
 #include "items.h"
 #include "levels/drlg_l1.h"
 #include "levels/drlg_l2.h"
@@ -435,7 +437,18 @@ std::expected<void, std::string> LoadDungeonBase(const char *path, Point spawn, 
 
 	memset(dungeon, dirtId, sizeof(dungeon));
 
-	auto dunData = LoadFileInMem<uint16_t>(path);
+	size_t words = 0;
+	auto dunData = LoadFileInMem<uint16_t>(path, &words);
+	if (hd_showcase::Active()) {
+		// Chunks such as rnd1-4 have no layers beyond the tiles and the loaders would read past the end of the file; the showcase draws no monsters or objects (an object whose graphics are not loaded would crash the first frame).
+		const WorldTileSize dunSize = GetDunSize(dunData.get());
+		const size_t tileWords = 2 + static_cast<size_t>(dunSize.width) * dunSize.height;
+		const size_t layerWords = static_cast<size_t>(dunSize.width) * dunSize.height * 4;
+		auto padded = std::make_unique<uint16_t[]>(tileWords + 4 * layerWords);
+		std::copy_n(dunData.get(), std::min(words, tileWords + 4 * layerWords), padded.get());
+		std::fill_n(&padded[tileWords + layerWords], 2 * layerWords, uint16_t { 0 });
+		dunData = std::move(padded);
+	}
 	PlaceDunTiles(dunData.get(), { 0, 0 }, floorId);
 	LoadTransparency(dunData.get());
 

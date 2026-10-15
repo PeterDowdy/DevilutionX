@@ -26,6 +26,7 @@
 #include "engine/load_file.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "game_mode.hpp"
+#include "hd_showcase.h"
 #include "loadsave.h"
 #include "menu.h"
 #include "mods/mod_identity.h"
@@ -793,6 +794,9 @@ void pfile_read_player_from_save(uint32_t saveNum, Player &player)
 			app_fatal(_("Unable to load character"));
 
 		gbValidSaveFile = ArchiveContainsGame(*archive);
+		// The showcase fixture is a Diablo save: Hellfire numbers the level files differently, so start a new game instead of loading it.
+		if (hd_showcase::Active() && gbIsHellfire)
+			gbValidSaveFile = false;
 		if (gbValidSaveFile)
 			pkplr.bIsHellfire = gbIsHellfireSaveGame ? 1 : 0;
 	}

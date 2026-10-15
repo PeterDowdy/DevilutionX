@@ -54,6 +54,7 @@
 #include "game_mode.hpp"
 #include "gamemenu.h"
 #include "gmenu.h"
+#include "hd_showcase.h"
 #include "headless_mode.hpp"
 #include "help.h"
 #include "hwcursor.hpp"
@@ -1566,6 +1567,7 @@ void GameLogic()
 	pfile_update(false);
 
 	plrctrls_after_game_logic();
+	hd_showcase::AfterGameTick();
 }
 
 void TimeoutCursor(bool bTimeout)

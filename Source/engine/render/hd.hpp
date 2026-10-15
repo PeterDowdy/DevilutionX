@@ -113,6 +113,12 @@ void NameTrn(const uint8_t *trn, std::string_view name);
 /** The 8-bit surface the game renders into (the one to track). */
 void SetTarget(SDL_Surface *palSurface);
 
+/**
+ * Dumps the next presented frame as hd-<name>.png, low-<name>.png (and ids-<name>.png with DEVILUTIONX_HD_DUMP_IDS) into DEVILUTIONX_HD_DUMP,
+ * whatever DEVILUTIONX_HD_DUMP_EVERY says (0 there turns the periodic dumps off). Does nothing without DEVILUTIONX_HD_DUMP.
+ */
+void RequestDump(std::string_view name);
+
 /** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
 void SetTileset(std::string_view name);
 

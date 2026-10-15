@@ -8,6 +8,7 @@
 #endif
 #include "engine/load_file.hpp"
 #include "engine/palette.h"
+#include "hd_showcase.h"
 #include "levels/drlg_l1.h"
 #include "levels/drlg_l2.h"
 #include "levels/drlg_l3.h"
@@ -165,6 +166,13 @@ std::expected<void, std::string> LoadSetMap()
 		RETURN_IF_ERROR(LoadArenaMap("arena\\circle_of_death.dun", { 30, 26 }, { 29, 26 }));
 		break;
 	case SL_NONE:
+		if (hd_showcase::Active()) {
+			RETURN_IF_ERROR(LoadCustomMap(hd_showcase::MapPath().c_str(), ViewPosition));
+			if (!hd_showcase::MapPalette().empty())
+				LoadPaletteAndInitBlending(hd_showcase::MapPalette().c_str());
+			InitNoTriggers();
+			break;
+		}
 #ifdef _DEBUG
 		RETURN_IF_ERROR(LoadCustomMap(TestMapPath.c_str(), ViewPosition));
 		InitNoTriggers();

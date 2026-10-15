@@ -14,6 +14,7 @@
 #include "engine/random.hpp"
 #include "engine/world_tile.hpp"
 #include "game_mode.hpp"
+#include "hd_showcase.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "levels/town.h"
@@ -304,6 +305,8 @@ int GetMapReturnLevel()
 
 Point GetMapReturnPosition()
 {
+	if (hd_showcase::Active())
+		return ViewPosition;
 #ifdef _DEBUG
 	if (!TestMapPath.empty())
 		return ViewPosition;

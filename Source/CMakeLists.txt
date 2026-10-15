@@ -10,6 +10,7 @@ set(libdevilutionx_SRCS
   dead.cpp
   debug.cpp
   diablo.cpp
+  hd_showcase.cpp
   diablo_msg.cpp
   doom.cpp
   gamemenu.cpp

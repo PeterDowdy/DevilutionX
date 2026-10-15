@@ -22,7 +22,9 @@
 #include "engine/events.hpp"
 #include "game_mode.hpp"
 #include "gmenu.h"
+#include "hd_showcase.h"
 #include "headless_mode.hpp"
+#include "interfac.h"
 #include "menu.h"
 #include "nthread.h"
 #include "options.h"
@@ -735,6 +737,11 @@ bool FetchMessage(SDL_Event *event, uint16_t *modState)
 	    SDL_PollEvent(&e) != 0
 #endif
 	) {
+		// The HD showcase warps between maps with a level-change event, which playback would otherwise drop.
+		if (hd_showcase::Active() && IsCustomEvent(e.type)) {
+			*event = e;
+			return true;
+		}
 		if (e.type ==
 #ifdef USE_SDL3
 		    SDL_EVENT_QUIT
