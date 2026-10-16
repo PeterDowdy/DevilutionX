@@ -25,13 +25,13 @@
 
 namespace devilution::hd {
 
-PixelProvenance *TrackPlane = nullptr;
-const uint8_t *TrackBase = nullptr;
-uint32_t TrackImage = 0;
-int16_t TrackLeft = 0;
-int16_t TrackTop = 0;
-uint8_t TrackFree = 0;
-uint32_t TrackSerial = 0;
+thread_local PixelProvenance *TrackPlane = nullptr;
+thread_local const uint8_t *TrackBase = nullptr;
+thread_local uint32_t TrackImage = 0;
+thread_local int16_t TrackLeft = 0;
+thread_local int16_t TrackTop = 0;
+thread_local uint8_t TrackFree = 0;
+thread_local uint32_t TrackSerial = 0;
 
 namespace {
 
@@ -232,7 +232,7 @@ struct SavedTrack {
 	uint8_t free;
 	uint32_t serial;
 };
-SavedTrack Saved;
+thread_local SavedTrack Saved;
 
 /** The draw in progress, when its art has a free silhouette: where it may draw (the art's rectangle, clipped to the surface). */
 struct FreeDraw {
@@ -241,7 +241,7 @@ struct FreeDraw {
 	int left = 0, top = 0;
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 };
-FreeDraw Free;
+thread_local FreeDraw Free;
 
 void Begin(const Surface &out, uint32_t image, int left, int top, bool free = false)
 {

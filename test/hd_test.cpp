@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <SDL.h>
@@ -290,6 +291,61 @@ TEST(HdTest, FreeSilhouetteGivesWayToLaterDraws)
 	ExpectColor(At(frame, 18, 8), FrontArt.r, FrontArt.g, FrontArt.b, "its neighbour");
 	SDL_FreeSurface(frame);
 	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, TrackingBelongsToTheThreadThatDraws)
+{
+	// The loading thread draws art into surfaces of its own (the virtual gamepad's potions) while the main thread has a tracked
+	// draw open or is presenting; its draws must not be recorded in the main thread's provenance plane
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_threads";
+	fs::remove_all(pack);
+	fs::create_directories(pack / "palettes");
+	{
+		const std::array<SDL_Color, 256> colors = Palette();
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	unsetenv("DEVILUTIONX_HD_DUMP");
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	const std::array<SDL_Color, 256> colors = Palette();
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 52, 12, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	hd::SetTarget(pal);
+	static std::vector<uint8_t> sprite;
+	sprite = Sprite();
+	const ClxSprite clx = ClxSpriteList { sprite.data() }[0];
+	{
+		const hd::SpriteScope scope(Surface(pal), { 8, 7 }, clx);
+		EXPECT_NE(hd::TrackPlane, nullptr) << "the main thread's draw is tracked";
+
+		bool otherThreadUntracked = false;
+		bool otherSurfaceDrawn = false;
+		std::thread loader([&]() {
+			otherThreadUntracked = hd::TrackPlane == nullptr;
+			SDL_Surface *own = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+			SDL_FillRect(own, nullptr, 0);
+			{
+				const hd::SpriteScope inner(Surface(own), { 1, 5 }, clx);
+				ClxDraw(Surface(own), { 1, 5 }, clx);
+			}
+			otherSurfaceDrawn = static_cast<uint8_t *>(own->pixels)[2 * own->pitch + 2] == Own;
+			otherThreadUntracked = otherThreadUntracked && hd::TrackPlane == nullptr;
+			SDL_FreeSurface(own);
+		});
+		loader.join();
+		EXPECT_TRUE(otherThreadUntracked) << "another thread starts and ends untracked";
+		EXPECT_TRUE(otherSurfaceDrawn) << "and draws into its own surface";
+		EXPECT_NE(hd::TrackPlane, nullptr) << "the main thread's draw is still tracked afterwards";
+	}
+	EXPECT_EQ(hd::TrackPlane, nullptr) << "and ends untracked";
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
 }
 
 } // namespace

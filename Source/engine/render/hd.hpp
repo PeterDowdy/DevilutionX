@@ -53,14 +53,18 @@ struct PixelProvenance {
 	uint32_t serial; ///< which draw wrote the pixel
 };
 
-/** Set while a tracked draw into the PalSurface runs: the plane, and the PalSurface pixel it starts at. */
-extern PixelProvenance *TrackPlane;
-extern const uint8_t *TrackBase;
-extern uint32_t TrackImage;
-extern int16_t TrackLeft;
-extern int16_t TrackTop;
-extern uint8_t TrackFree;
-extern uint32_t TrackSerial;
+/**
+ * Set while a tracked draw into the PalSurface runs: the plane, and the PalSurface pixel it starts at. Per thread: the
+ * loading thread draws art into surfaces of its own (the virtual gamepad's potions) while the main thread draws and
+ * presents the loading screen, and a draw on the loader must never be recorded in the main thread's plane.
+ */
+extern thread_local PixelProvenance *TrackPlane;
+extern thread_local const uint8_t *TrackBase;
+extern thread_local uint32_t TrackImage;
+extern thread_local int16_t TrackLeft;
+extern thread_local int16_t TrackTop;
+extern thread_local uint8_t TrackFree;
+extern thread_local uint32_t TrackSerial;
 
 /** Record ``n`` pixels just written at ``dst`` from the art indices ``src``. */
 inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
