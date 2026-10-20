@@ -293,6 +293,31 @@ TEST(HdTest, FreeSilhouetteGivesWayToLaterDraws)
 	SDL_FreeSurface(pal);
 }
 
+TEST(HdTest, FreeSilhouetteStaysOverFoliage)
+{
+	SDL_Surface *pal = nullptr;
+	// Floor foliage drawn after the sprite (the tile beside it, DrawCell) goes under the sprite's extension pixels but over its own
+	SDL_Surface *frame = DrawFreeScenario("foliage", true, 52, &pal, [](SDL_Surface *s) {
+		const Surface out(s);
+		const hd::PillarScope pillar(out, { 0, 11 }, 0, 1);
+		const hd::FoliageScope foliage;
+		const uint8_t art = Unique;
+		const int points[2][2] = { { 8, 4 }, { 9, 5 } };
+		for (const auto &pt : points) {
+			uint8_t *dst = static_cast<uint8_t *>(s->pixels) + pt[1] * s->pitch + pt[0];
+			*dst = Unique;
+			hd::Mark(dst, &art, 1);
+		}
+	});
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color unique = Palette()[Unique];
+	ExpectColor(At(frame, 16, 8), FrontArt.r, FrontArt.g, FrontArt.b, "an extension pixel stays over foliage");
+	ExpectColor(At(frame, 18, 10), unique.r, unique.g, unique.b, "foliage still covers the sprite's own pixel");
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[4 * pal->pitch + 8], Own) << "the extension's index is put back";
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
 TEST(HdTest, TrackingBelongsToTheThreadThatDraws)
 {
 	// The loading thread draws art into surfaces of its own (the virtual gamepad's potions) while the main thread has a tracked

@@ -619,6 +619,7 @@ void DrawCell(const Surface &out, const Lightmap lightmap, Point tilePosition, P
 		const TileType tileType = levelCelBlock.type();
 		if (!isFloor || tileType == TileType::TransparentSquare) {
 			if (isFloor && tileType == TileType::TransparentSquare) {
+				const hd::FoliageScope hdFoliage;
 				RenderTileFoliage(out, bleedLightmap, targetBufferPosition,
 				    pDungeonCels.get(), levelCelBlock, foliageTbl);
 			} else {
@@ -631,6 +632,7 @@ void DrawCell(const Surface &out, const Lightmap lightmap, Point tilePosition, P
 		const TileType tileType = levelCelBlock.type();
 		if (!isFloor || tileType == TileType::TransparentSquare) {
 			if (isFloor && tileType == TileType::TransparentSquare) {
+				const hd::FoliageScope hdFoliage;
 				RenderTileFoliage(out, bleedLightmap, targetBufferPosition + RightFrameDisplacement,
 				    pDungeonCels.get(), levelCelBlock, foliageTbl);
 			} else {

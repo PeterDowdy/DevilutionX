@@ -32,6 +32,7 @@ thread_local int16_t TrackLeft = 0;
 thread_local int16_t TrackTop = 0;
 thread_local uint8_t TrackFree = 0;
 thread_local uint32_t TrackSerial = 0;
+thread_local uint8_t TrackUnder = 0;
 
 namespace {
 
@@ -294,7 +295,8 @@ void ComputeReach(HdImage &img)
 
 /**
  * Draws the art's pixels outside the sprite's footprint into the PalSurface: each takes the index, and so the lighting,
- * of the nearest pixel the sprite drew (preferring one that isn't near black), and is recorded as the sprite's own.
+ * of the nearest pixel the sprite drew (preferring one that isn't near black), and is recorded as the sprite's own (free == 2: foliage drawn
+ * later goes under it, see TrackUnder).
  */
 void ExtendFootprint()
 {
@@ -342,7 +344,7 @@ void ExtendFootprint()
 		donors.push_back(*e.donor);
 	for (size_t i = 0; i < extend.size(); ++i) {
 		pixels[extend[i].at] = donors[i].written;
-		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 1, TrackSerial };
+		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, TrackSerial };
 	}
 }
 

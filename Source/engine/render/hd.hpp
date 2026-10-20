@@ -49,7 +49,7 @@ struct PixelProvenance {
 	int16_t top;
 	uint8_t source;  ///< the art's own colour index, before lighting, TRN or blending
 	uint8_t written; ///< the index written to the PalSurface
-	uint8_t free;    ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp)
+	uint8_t free;    ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp); 2 = added outside the sprite's footprint
 	uint32_t serial; ///< which draw wrote the pixel
 };
 
@@ -65,14 +65,25 @@ extern thread_local int16_t TrackLeft;
 extern thread_local int16_t TrackTop;
 extern thread_local uint8_t TrackFree;
 extern thread_local uint32_t TrackSerial;
+/**
+ * Set while a floor tile's foliage draws (DrawCell, FoliageScope). Foliage is ground cover drawn after the sprites of its row; the original
+ * sprites never reach into the next tile, but free-silhouette art does, and the foliage of the tile beside it (grass, a house's shadow) then
+ * cut notches out of it. Pixels a sprite added outside its footprint (free == 2) therefore stay on top of foliage; its own pixels do not.
+ */
+extern thread_local uint8_t TrackUnder;
 
 /** Record ``n`` pixels just written at ``dst`` from the art indices ``src``. */
 inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
 {
 	if (TrackPlane == nullptr) return;
 	PixelProvenance *p = TrackPlane + (dst - TrackBase);
-	for (unsigned i = 0; i < n; ++i)
+	for (unsigned i = 0; i < n; ++i) {
+		if (TrackUnder != 0 && p[i].free == 2) {
+			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
+			continue;
+		}
 		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackSerial };
+	}
 }
 
 /** Record ``n`` pixels just written at ``dst`` from one art index. */
@@ -80,8 +91,13 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 {
 	if (TrackPlane == nullptr) return;
 	PixelProvenance *p = TrackPlane + (dst - TrackBase);
-	for (unsigned i = 0; i < n; ++i)
+	for (unsigned i = 0; i < n; ++i) {
+		if (TrackUnder != 0 && p[i].free == 2) {
+			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
+			continue;
+		}
 		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackSerial };
+	}
 }
 
 /** Whether an HD pack is loaded. */
@@ -144,6 +160,15 @@ class PillarScope {
 public:
 	PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows);
 	~PillarScope();
+};
+
+/** While it lives, the pillar draw in progress is a floor tile's foliage (see TrackUnder). */
+class FoliageScope {
+public:
+	FoliageScope() { TrackUnder = 1; }
+	~FoliageScope() { TrackUnder = 0; }
+	FoliageScope(const FoliageScope &) = delete;
+	FoliageScope &operator=(const FoliageScope &) = delete;
 };
 
 /**
