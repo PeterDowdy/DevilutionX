@@ -170,6 +170,12 @@ struct Surface {
 	void BlitFromSkipColorIndexZero(const Surface &src, SDL_Rect srcRect, Point targetPosition) const;
 };
 
+/**
+ * Called after every Surface blit (BlitFrom, BlitFromSkipColorIndexZero) with the clipped rectangle, when set: the HD layer carries pixel
+ * provenance along with copies from the off-screen buffers it tracks (the control panel). Null by default.
+ */
+extern void (*SurfaceBlitHook)(const Surface &src, SDL_Rect srcRect, const Surface &dst, Point dstPosition, bool skipColorIndexZero);
+
 class OwnedSurface : public Surface {
 	SDLSurfaceUniquePtr pinnedSurface;
 

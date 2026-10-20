@@ -236,6 +236,7 @@ target_link_dependencies(libdevilutionx_hd PUBLIC
   DevilutionX::SDL
   SDL2::SDL2_image
   libdevilutionx_log
+  libdevilutionx_surface
 )
 
 add_devilutionx_object_library(libdevilutionx_clx_render

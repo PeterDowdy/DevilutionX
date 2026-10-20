@@ -5,6 +5,8 @@
 
 namespace devilution {
 
+void (*SurfaceBlitHook)(const Surface &src, SDL_Rect srcRect, const Surface &dst, Point dstPosition, bool skipColorIndexZero) = nullptr;
+
 namespace {
 
 template <bool SkipColorIndexZero>
@@ -37,6 +39,8 @@ void SurfaceBlit(const Surface &src, SDL_Rect srcRect, const Surface &dst, Point
 			dstBuf += dstPitch;
 		}
 	}
+	if (SurfaceBlitHook != nullptr)
+		SurfaceBlitHook(src, srcRect, dst, dstPosition, SkipColorIndexZero);
 }
 
 } // namespace

@@ -318,6 +318,63 @@ TEST(HdTest, FreeSilhouetteStaysOverFoliage)
 	SDL_FreeSurface(pal);
 }
 
+TEST(HdTest, OffscreenBuffersCarryTheirArtToTheScreen)
+{
+	// The control panel is drawn once into BottomBuffer and blitted to the screen every frame: its art must survive the copy
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_offscreen";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/panel/a/0.0.png", FrontArt, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 36, 10, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	SDL_Surface *buffer = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_FillRect(buffer, nullptr, BackgroundIndex);
+	SDL_Surface *plain = SDL_CreateRGBSurfaceWithFormat(0, 4, 4, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_FillRect(plain, nullptr, Own);
+	hd::TrackOffscreen(buffer);
+
+	static std::vector<uint8_t> sprite;
+	sprite = Sprite();
+	hd::RegisterSpriteList("Panel\\A.CL2", 0, ClxSpriteList { sprite.data() });
+	const Surface out(pal);
+	ClxDraw(Surface(buffer), { 2, 5 }, ClxSpriteList { sprite.data() }[0]); // buffer x 2..5, y 2..5
+	out.BlitFrom(Surface(buffer), MakeSdlRect(0, 0, 8, 8), { 10, 1 });      // screen x 12..15, y 3..6
+	ClxDraw(out, { 24, 6 }, ClxSpriteList { sprite.data() }[0]);             // screen x 24..27, y 3..6
+	out.BlitFrom(Surface(plain), MakeSdlRect(0, 0, 4, 4), { 24, 3 });       // ... then covered by a copy from an untracked buffer
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 24, 6), FrontArt.r, FrontArt.g, FrontArt.b, "the buffer's art after the blit");
+	ExpectColor(At(frame, 31, 13), FrontArt.r, FrontArt.g, FrontArt.b, "the buffer's art after the blit, its last pixel");
+	ExpectColor(At(frame, 22, 6), Background.r, Background.g, Background.b, "beside it");
+	const SDL_Color own = Palette()[Own];
+	ExpectColor(At(frame, 50, 8), own.r, own.g, own.b, "a copy from an untracked buffer shows its own pixels");
+	hd::ForgetOffscreen(buffer);
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(plain);
+	SDL_FreeSurface(buffer);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 TEST(HdTest, TrackingBelongsToTheThreadThatDraws)
 {
 	// The loading thread draws art into surfaces of its own (the virtual gamepad's potions) while the main thread has a tracked

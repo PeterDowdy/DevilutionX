@@ -130,6 +130,15 @@ public:
 /** Names a TRN that sprites are drawn through (a unique monster's: "rcrn"), for "@<swap>+<name>" art. */
 void NameTrn(const uint8_t *trn, std::string_view name);
 
+/**
+ * Off-screen 8-bit buffers the game composes once and then copies to the screen (the control panel's BottomBuffer, the flask buffers): draws
+ * into a registered buffer are tracked in a plane of its own, and Surface blits from it into the PalSurface carry that provenance along, so the
+ * panel's art gets its HD image too. Blits from a buffer the layer does not track clear the provenance they cover. Forget a buffer before it is
+ * freed.
+ */
+void TrackOffscreen(SDL_Surface *buffer);
+void ForgetOffscreen(SDL_Surface *buffer);
+
 /** The 8-bit surface the game renders into (the one to track). */
 void SetTarget(SDL_Surface *palSurface);
 

@@ -244,11 +244,70 @@ struct FreeDraw {
 };
 thread_local FreeDraw Free;
 
+/** A tracked off-screen buffer (TrackOffscreen) and its provenance plane, indexed like its pixels (row pitch). */
+struct Offscreen {
+	SDL_Surface *surface;
+	std::vector<PixelProvenance> plane;
+};
+std::vector<Offscreen> Offscreens;
+
+Offscreen *FindOffscreen(const SDL_Surface *surface)
+{
+	for (Offscreen &o : Offscreens)
+		if (o.surface == surface) return &o;
+	return nullptr;
+}
+
+/** SurfaceBlitHook: a copy into the PalSurface takes the provenance of what it copies (none, from an untracked source). */
+void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at, bool skipZero)
+{
+	if (!Active || dst.surface != Target || src.surface == nullptr || !EnsurePlane()) return;
+	const Offscreen *off = FindOffscreen(src.surface);
+	const bool self = src.surface == Target;
+	const int sx = src.region.x + r.x, sy = src.region.y + r.y;
+	const int dx = dst.region.x + at.x, dy = dst.region.y + at.y;
+	const auto *pixels = static_cast<const uint8_t *>(src.surface->pixels);
+	const int srcPitch = src.surface->pitch;
+	std::vector<PixelProvenance> row;
+	for (int y = 0; y < r.h; ++y) {
+		const int ty = dy + (self && dy > sy ? r.h - 1 - y : y), fy = sy + (self && dy > sy ? r.h - 1 - y : y);
+		PixelProvenance *to = &Plane[static_cast<size_t>(ty) * PlanePitch + dx];
+		const uint8_t *idx = pixels + static_cast<size_t>(fy) * srcPitch + sx;
+		if (self) row.assign(&Plane[static_cast<size_t>(fy) * PlanePitch + sx], &Plane[static_cast<size_t>(fy) * PlanePitch + sx] + r.w);
+		for (int x = 0; x < r.w; ++x) {
+			if (skipZero && idx[x] == 0) continue;
+			if (off == nullptr && !self) {
+				to[x] = {};
+				continue;
+			}
+			PixelProvenance p = self ? row[x] : off->plane[static_cast<size_t>(fy) * srcPitch + sx + x];
+			if (p.image != 0) {
+				p.left = static_cast<int16_t>(p.left + dx - sx);
+				p.top = static_cast<int16_t>(p.top + dy - sy);
+			}
+			to[x] = p;
+		}
+	}
+}
+
 void Begin(const Surface &out, uint32_t image, int left, int top, bool free = false)
 {
 	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackSerial };
 	Free.on = false;
-	if (!Active || out.surface != Target || !EnsurePlane()) return;
+	if (!Active) return;
+	if (out.surface != Target) {
+		Offscreen *off = FindOffscreen(out.surface);
+		if (off == nullptr) return;
+		TrackPlane = off->plane.data(); // an off-screen buffer: tracked plainly (no free silhouettes)
+		TrackBase = static_cast<const uint8_t *>(out.surface->pixels);
+		TrackImage = image;
+		TrackLeft = static_cast<int16_t>(left);
+		TrackTop = static_cast<int16_t>(top);
+		TrackFree = 0;
+		TrackSerial = ++NextSerial;
+		return;
+	}
+	if (!EnsurePlane()) return;
 	TrackPlane = Plane.data();
 	TrackBase = static_cast<const uint8_t *>(Target->pixels);
 	TrackImage = image;
@@ -601,6 +660,7 @@ void Init()
 		DumpIds = std::getenv("DEVILUTIONX_HD_DUMP_IDS") != nullptr;
 	}
 	Active = true;
+	SurfaceBlitHook = &CopyProvenance;
 	LogInfo("HD: pack {} ({} images, {}x{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "");
 }
 
@@ -684,6 +744,19 @@ void NameTrn(const uint8_t *trn, std::string_view name)
 void SetTarget(SDL_Surface *palSurface)
 {
 	Target = palSurface;
+}
+
+void TrackOffscreen(SDL_Surface *buffer)
+{
+	if (!Active || buffer == nullptr) return;
+	Offscreen *off = FindOffscreen(buffer);
+	if (off == nullptr) off = &Offscreens.emplace_back(Offscreen { buffer, {} });
+	off->plane.assign(static_cast<size_t>(buffer->pitch) * buffer->h, PixelProvenance {});
+}
+
+void ForgetOffscreen(SDL_Surface *buffer)
+{
+	Offscreens.erase(std::remove_if(Offscreens.begin(), Offscreens.end(), [buffer](const Offscreen &o) { return o.surface == buffer; }), Offscreens.end());
 }
 
 void SetTileset(std::string_view name)

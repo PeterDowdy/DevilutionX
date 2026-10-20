@@ -10,6 +10,7 @@
 #include "engine/backbuffer_state.hpp"
 #include "engine/load_cel.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/trn.hpp"
 #include "gamemenu.h"
 #include "headless_mode.hpp"
@@ -359,6 +360,8 @@ std::expected<void, std::string> InitMainPanel()
 		BottomBuffer.emplace(GetMainPanel().size.width, (GetMainPanel().size.height + PanelPaddingHeight) * (IsChatAvailable() ? 2 : 1));
 		pManaBuff.emplace(88, 88);
 		pLifeBuff.emplace(88, 88);
+		for (const Surface *buffer : { static_cast<const Surface *>(&*BottomBuffer), static_cast<const Surface *>(&*pManaBuff), static_cast<const Surface *>(&*pLifeBuff) })
+			hd::TrackOffscreen(buffer->surface); // the panel and the flasks are composed here once and copied to the screen
 
 		RETURN_IF_ERROR(LoadPartyPanel());
 		RETURN_IF_ERROR(LoadCharPanel());
@@ -628,6 +631,8 @@ void CheckMainPanelButtonUp()
 
 void FreeControlPan()
 {
+	for (const auto *buffer : { &BottomBuffer, &pManaBuff, &pLifeBuff })
+		if (*buffer) hd::ForgetOffscreen((*buffer)->surface);
 	BottomBuffer = std::nullopt;
 	pManaBuff = std::nullopt;
 	pLifeBuff = std::nullopt;
