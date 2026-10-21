@@ -39,6 +39,7 @@ set(tests
   timedemo_test
   townerdat_test
   writehero_test
+  testheroes_test
   vendor_test
   panel_state_test
   store_transaction_test
