@@ -2679,23 +2679,30 @@ PlayerWeaponGraphic GetPlrAnimWeaponId(const Player &player)
 	const bool leftHandUsable = player.CanUseItem(leftHandItem);
 	const bool rightHandUsable = player.CanUseItem(rightHandItem);
 	ItemType weaponItemType = ItemType::None;
+	bool twoHanded = false;
 
 	if (!leftHandItem.isEmpty() && leftHandItem._iClass == ICLASS_WEAPON && leftHandUsable) {
 		weaponItemType = leftHandItem._itype;
+		twoHanded = leftHandItem._iLoc == ILOC_TWOHAND;
 	}
 
 	if (!rightHandItem.isEmpty() && rightHandItem._iClass == ICLASS_WEAPON && rightHandUsable) {
 		weaponItemType = rightHandItem._itype;
+		twoHanded = rightHandItem._iLoc == ILOC_TWOHAND;
 	}
 
 	switch (weaponItemType) {
 	case ItemType::Sword:
+		if (twoHanded && !holdsShield)
+			return PlayerWeaponGraphic::TwoHandSword;
 		return holdsShield ? PlayerWeaponGraphic::SwordShield : PlayerWeaponGraphic::Sword;
 	case ItemType::Axe:
 		return PlayerWeaponGraphic::Axe;
 	case ItemType::Bow:
 		return PlayerWeaponGraphic::Bow;
 	case ItemType::Mace:
+		if (twoHanded && !holdsShield)
+			return PlayerWeaponGraphic::TwoHandMace;
 		return holdsShield ? PlayerWeaponGraphic::MaceShield : PlayerWeaponGraphic::Mace;
 	case ItemType::Staff:
 		return PlayerWeaponGraphic::Staff;
@@ -2893,7 +2900,13 @@ void CalcPlrItemVals(Player &player, bool loadgfx)
 
 	CalcPlrBlockFlag(player);
 
-	CalcPlrGraphics(player, GetPlrAnimWeaponId(player), GetPlrAnimArmorId(player), loadgfx);
+	PlayerWeaponGraphic weaponGraphic = GetPlrAnimWeaponId(player);
+	const PlayerArmorGraphic armorGraphic = GetPlrAnimArmorId(player);
+	if (!HavePlayerWeaponArt(player, weaponGraphic, static_cast<uint8_t>(armorGraphic))) {
+		// No two-handed art for this class and armour (e.g. the original game data): the one-handed set
+		weaponGraphic = weaponGraphic == PlayerWeaponGraphic::TwoHandMace ? PlayerWeaponGraphic::Mace : PlayerWeaponGraphic::Sword;
+	}
+	CalcPlrGraphics(player, weaponGraphic, armorGraphic, loadgfx);
 
 	CalcPlrAuricBonus(player);
 	RedrawComponent(PanelDrawComponent::Mana);

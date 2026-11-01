@@ -1485,6 +1485,8 @@ PlayerWeaponGraphic GetPlayerWeaponGraphic(player_graphic graphic, PlayerWeaponG
 		switch (weaponGraphic) {
 		case PlayerWeaponGraphic::Mace:
 		case PlayerWeaponGraphic::Sword:
+		case PlayerWeaponGraphic::TwoHandSword: // carried across the back in town
+		case PlayerWeaponGraphic::TwoHandMace:
 			return PlayerWeaponGraphic::Unarmed;
 		case PlayerWeaponGraphic::SwordShield:
 		case PlayerWeaponGraphic::MaceShield:
@@ -1528,6 +1530,11 @@ uint16_t GetPlayerSpriteWidth(HeroClass cls, player_graphic graphic, PlayerWeapo
 void GetPlayerGraphicsPath(std::string_view path, std::string_view prefix, std::string_view type, char out[256])
 {
 	*BufCopy(out, "plrgfx\\", path, "\\", prefix, "\\", prefix, type) = '\0';
+}
+
+bool IsTwoHandedWeaponGraphic(PlayerWeaponGraphic weaponGraphic)
+{
+	return IsAnyOf(weaponGraphic, PlayerWeaponGraphic::TwoHandSword, PlayerWeaponGraphic::TwoHandMace);
 }
 
 } // namespace
@@ -2090,6 +2097,24 @@ ClxSprite GetPlayerPortraitSprite(Player &player)
 	return spriteList[(graphic == player_graphic::Stand) ? 0 : spriteList.numSprites() - 1];
 }
 
+bool HavePlayerWeaponArt(const Player &player, PlayerWeaponGraphic weaponGraphic, uint8_t armorGraphic)
+{
+	if (!IsTwoHandedWeaponGraphic(weaponGraphic))
+		return true;
+	const PlayerSpriteData &spriteData = GetPlayerSpriteDataForClass(GetPlayerSpriteClass(player._pClass));
+	const char prefixBuf[3] = { spriteData.classChar, ArmourChar[armorGraphic >> 4], WepChar[static_cast<std::size_t>(weaponGraphic)] };
+	char pszName[256];
+	GetPlayerGraphicsPath(spriteData.classPath, std::string_view(prefixBuf, 3), "as", pszName);
+	static std::vector<std::pair<std::string, bool>> known; // looked up once per path (a file search)
+	for (const auto &[path, found] : known) {
+		if (path == pszName)
+			return found;
+	}
+	const bool found = FindAsset(pszName).ok();
+	known.emplace_back(pszName, found);
+	return found;
+}
+
 bool IsPlayerUnarmed(Player &player)
 {
 	const PlayerWeaponGraphic animWeaponId = GetPlayerWeaponGraphic(player_graphic::Stand, static_cast<PlayerWeaponGraphic>(player._pgfxnum & 0xF));
@@ -2277,6 +2302,14 @@ void SetPlrAnims(Player &player)
 		case PlayerWeaponGraphic::Staff:
 			player._pAFrames = plrAtkAnimData.staffFrames;
 			player._pAFNum = plrAtkAnimData.staffActionFrame;
+			break;
+		case PlayerWeaponGraphic::TwoHandSword: // the two-handed sets keep the one-handed timing (their art is made to hit on its action frame)
+			player._pAFrames = plrAtkAnimData.swordFrames;
+			player._pAFNum = plrAtkAnimData.swordActionFrame;
+			break;
+		case PlayerWeaponGraphic::TwoHandMace:
+			player._pAFrames = plrAtkAnimData.maceFrames;
+			player._pAFNum = plrAtkAnimData.maceActionFrame;
 			break;
 		}
 	}

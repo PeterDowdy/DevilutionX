@@ -104,6 +104,8 @@ enum class PlayerWeaponGraphic : uint8_t {
 	Mace,
 	MaceShield,
 	Staff,
+	TwoHandSword,
+	TwoHandMace,
 };
 
 enum PLR_MODE : uint8_t {
@@ -172,7 +174,7 @@ constexpr std::array<char, 3> ArmourChar = {
 	'h', // heavy
 };
 /** Maps from weapon animation to letter used in graphic files. */
-constexpr std::array<char, 9> WepChar = {
+constexpr std::array<char, 11> WepChar = {
 	'n', // unarmed
 	'u', // no weapon + shield
 	's', // sword + no shield
@@ -182,6 +184,8 @@ constexpr std::array<char, 9> WepChar = {
 	'm', // blunt + no shield
 	'h', // blunt + shield
 	't', // staff
+	'w', // two-handed sword (art of its own where the game data has it: HavePlayerWeaponArt)
+	'x', // two-handed mace
 };
 
 /**
@@ -933,6 +937,12 @@ Player *PlayerAtPosition(Point position, bool ignoreMovingPlayers = false);
  */
 ClxSprite GetPlayerPortraitSprite(Player &player);
 bool IsPlayerUnarmed(Player &player);
+/**
+ * @brief Whether the game data has the sprites of a weapon graphic for this player's class and armour. Always true for the
+ * original weapon graphics; the two-handed sword and mace sets are optional art (a remaster addition), and a player without
+ * them is drawn with the one-handed sword or mace set.
+ */
+bool HavePlayerWeaponArt(const Player &player, PlayerWeaponGraphic weaponGraphic, uint8_t armorGraphic);
 
 void LoadPlrGFX(Player &player, player_graphic graphic);
 void InitPlayerGFX(Player &player);
