@@ -172,7 +172,17 @@ std::string NormalizePath(std::string_view path)
 bool LoadImage(const std::string &file, const std::string &palette, HdImage &img)
 {
 	const std::string path = PackDir + "/" + file;
-	SDL_Surface *loaded = IMG_LoadPNG(path.c_str());
+	// open and close the file here: IMG_LoadPNG(path) leaves its file open, one descriptor per HD image, until the process
+	// runs out of them (Peter, 2026-11-01: crashed in the dungeon with "Too many open files")
+#ifdef USE_SDL3
+	SDL_IOStream *src = SDL_IOFromFile(path.c_str(), "rb");
+	SDL_Surface *loaded = src != nullptr ? IMG_LoadPNG_IO(src) : nullptr;
+	if (src != nullptr) SDL_CloseIO(src);
+#else
+	SDL_RWops *src = SDL_RWFromFile(path.c_str(), "rb");
+	SDL_Surface *loaded = src != nullptr ? IMG_LoadPNG_RW(src) : nullptr;
+	if (src != nullptr) SDL_RWclose(src);
+#endif
 	if (loaded == nullptr) {
 		LogError("HD: can't load {}: {}", path, SDL_GetError());
 		return false;
