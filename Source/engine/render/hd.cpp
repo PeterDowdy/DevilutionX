@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <mutex>
 #include <sstream>
 #include <thread>
 #include <string>
@@ -79,7 +80,9 @@ bool Active = false;
 std::string PackDir;
 int Scale = 4;
 std::unordered_map<std::string, std::string> Manifest; ///< image file -> palette file
-std::vector<HdImage> Images(1);                         ///< id 0: none
+std::vector<HdImage> Images(1);                         ///< id 0: none; reserved for the whole manifest when the pack loads, so it never
+                                                        ///< reallocates while Compose reads it (the level loader thread adds images)
+std::mutex ImagesMutex;                                 ///< ImageId: the main and the loader thread look up / add images
 std::unordered_map<std::string, uint32_t> ImageIds;     ///< image file -> id (0: no image)
 std::unordered_map<const uint8_t *, SpriteEntry> Sprites;
 std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any frame, its own or a swap's
@@ -192,6 +195,7 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 
 uint32_t ImageId(const std::string &file, int loW, int loH)
 {
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const auto found = ImageIds.find(file);
 	if (found != ImageIds.end()) return found->second;
 	uint32_t id = 0;
@@ -646,6 +650,7 @@ void Init()
 		}
 	}
 	Scale = std::clamp(Scale, 1, 8);
+	Images.reserve(Manifest.size() + 1);
 	for (const auto &[file, palette] : Manifest) {
 		if (file.rfind("sprite/", 0) != 0) continue;
 		std::string stem = file.substr(0, file.rfind('/'));
