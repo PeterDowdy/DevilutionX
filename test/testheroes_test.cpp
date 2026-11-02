@@ -30,6 +30,7 @@
 #include "loadsave.h"
 #include "menu.h"
 #include "pfile.h"
+#include "qol/stash.h"
 #include "player.h"
 #include "spells.h"
 #include "tables/playerdat.hpp"
@@ -62,6 +63,24 @@ void Give(Player &player, std::string_view name)
 	EXPECT_TRUE(worn || AutoPlaceItemInBelt(player, item, true) || AutoPlaceItemInInventory(player, item)) << name;
 	if (std::getenv("TEST_HEROES_VERBOSE") != nullptr)
 		std::cout << "  " << name << (worn ? " worn" : " packed") << " (" << item._iName << ", str " << static_cast<int>(item._iMinStr) << ")\n";
+}
+
+// What doesn't fit in the pack goes to the shared stash (in town), so a fuller kit still demos every animation
+void GiveOrStash(Player &player, std::string_view name)
+{
+	const _item_indexes idx = ItemByName(name);
+	ASSERT_NE(idx, IDI_NONE) << name;
+	Item item;
+	InitializeItem(item, idx);
+	GenerateNewSeed(item);
+	item.updateRequiredStatsCacheForPlayer(player);
+	if (AutoEquip(player, item) || AutoPlaceItemInInventory(player, item)) {
+		if (std::getenv("TEST_HEROES_VERBOSE") != nullptr)
+			std::cout << "  " << name << " worn or packed\n";
+		return;
+	}
+	EXPECT_TRUE(AutoPlaceItemInStash(item, true)) << name;
+	std::cout << "  " << name << " -> the stash\n";
 }
 
 void MakeHero(uint32_t saveNumber, HeroClass heroClass, const char *name, std::string_view armour)
@@ -120,14 +139,24 @@ void MakeHero(uint32_t saveNumber, HeroClass heroClass, const char *name, std::s
 
 	InitCursor();
 	Give(player, armour);
-	Give(player, "Short Sword");
-	Give(player, "Buckler");
-	for (const char *other : { "Ring Mail", "Breast Plate" }) { // light armour = no chest armour (take it off), the pack is too small for a third
-		if (armour != other)
-			Give(player, other);
+	if (heroClass == HeroClass::Warrior) {
+		// The two-handed sword and mace sets (DevilutionX remaster/two-handed-anims, Peter 2026-11-01: "update the test character to give
+		// him two-handed weapons to test"): the two-handed sword in his hands, the maul with the rest; what the pack can't hold goes to the stash
+		Give(player, "Two-Handed Sword");
+		for (const char *item : { "Ring Mail", "Maul", "Short Sword", "Buckler", "Mace", "Small Axe", "Short Bow", "Short Staff" }) {
+			if (armour != item)
+				GiveOrStash(player, item);
+		}
+	} else {
+		Give(player, "Short Sword");
+		Give(player, "Buckler");
+		for (const char *other : { "Ring Mail", "Breast Plate" }) { // light armour = no chest armour (take it off), the pack is too small for a third
+			if (armour != other)
+				Give(player, other);
+		}
+		for (const char *item : { "Mace", "Small Axe", "Short Bow", "Short Staff" })
+			Give(player, item);
 	}
-	for (const char *item : { "Mace", "Small Axe", "Short Bow", "Short Staff" })
-		Give(player, item);
 	for (int i = 0; i < 8; i++) {
 		Item potion;
 		InitializeItem(potion, IDI_FULLHEAL);
@@ -140,6 +169,7 @@ void MakeHero(uint32_t saveNumber, HeroClass heroClass, const char *name, std::s
 	player._pHitPoints = player._pMaxHP;
 	player._pMana = player._pMaxMana;
 	pfile_write_hero(/*writeGameData=*/false);
+	sfile_write_stash(); // (only when something went there)
 	std::cout << name << ": level " << static_cast<int>(player.getCharacterLevel()) << ", str/mag/dex/vit " << player._pBaseStr << '/'
 	          << player._pBaseMag << '/' << player._pBaseDex << '/' << player._pBaseVit << ", life " << (player._pMaxHP >> 6) << ", mana "
 	          << (player._pMaxMana >> 6) << ", items " << player._pNumInv << " in the pack -> single_" << saveNumber << ".sv\n";
@@ -245,7 +275,9 @@ TEST(TestHeroes, Write)
 			belt += item.isEmpty() ? 0 : 1;
 		std::cout << ", belt " << belt << "\n";
 		EXPECT_EQ(player.getCharacterLevel(), player.getMaxCharacterLevel());
-		EXPECT_EQ(player._pNumInv, 5);
+		if (player._pClass != HeroClass::Warrior) { // (the warrior's pack is as full as it gets: the rest of his kit is in the stash)
+			EXPECT_EQ(player._pNumInv, 5);
+		}
 	}
 
 	// No mod identifier is registered here, so the engine wrote .sv: the game reads Hellfire heroes as .hsv
@@ -253,6 +285,10 @@ TEST(TestHeroes, Write)
 		for (uint32_t i = n; i < n + count; i++) {
 			std::filesystem::rename(StrCat(out, "/single_", i, ".sv"), StrCat(out, "/single_", i, ".hsv"));
 			std::cout << "-> single_" << i << ".hsv\n";
+		}
+		if (std::filesystem::exists(StrCat(out, "/stash.sv"))) { // the shared stash too (the warrior's overflow)
+			std::filesystem::rename(StrCat(out, "/stash.sv"), StrCat(out, "/stash.hsv"));
+			std::cout << "-> stash.hsv\n";
 		}
 	}
 }
