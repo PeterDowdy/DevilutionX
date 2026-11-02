@@ -2104,7 +2104,7 @@ bool HavePlayerWeaponArt(const Player &player, PlayerWeaponGraphic weaponGraphic
 	const PlayerSpriteData &spriteData = GetPlayerSpriteDataForClass(GetPlayerSpriteClass(player._pClass));
 	const char prefixBuf[3] = { spriteData.classChar, ArmourChar[armorGraphic >> 4], WepChar[static_cast<std::size_t>(weaponGraphic)] };
 	char pszName[256];
-	GetPlayerGraphicsPath(spriteData.classPath, std::string_view(prefixBuf, 3), "as", pszName);
+	GetPlayerGraphicsPath(spriteData.classPath, std::string_view(prefixBuf, 3), "as" DEVILUTIONX_CL2_EXT, pszName);
 	static std::vector<std::pair<std::string, bool>> known; // looked up once per path (a file search)
 	for (const auto &[path, found] : known) {
 		if (path == pszName)
