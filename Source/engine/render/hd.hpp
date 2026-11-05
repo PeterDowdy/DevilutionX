@@ -21,6 +21,9 @@
  *                                             type's TRN ("@bluered"), a unique monster's on top ("@bluered+rcrn",
  *                                             or "@+eth" on a type without one). Drawn as it is where the pack has
  *                                             it; otherwise the frame without the swap is graded as usual.
+ *   sprite/<mpq path without ext>@hf/<group>.<frame>.png   a menu PCX that a Hellfire archive supplies under Diablo's path
+ *                                             (ui_art/heros: Hellfire adds the monk as frame 3, Diablo's new hero): Hellfire's
+ *                                             art only, it never falls back to the plain path's (Diablo's) art.
  *   tile/<tileset>/<pillar>.png               a level pillar (.min entry): 64 x 32*rows original pixels
  *   palettes/<mpq path>.pal                   768-byte RGB reference palettes
  *

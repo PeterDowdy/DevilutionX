@@ -375,6 +375,59 @@ TEST(HdTest, OffscreenBuffersCarryTheirArtToTheScreen)
 	fs::remove_all(pack);
 }
 
+TEST(HdTest, HellfireMenuArtIsKeptApartFromDiablos)
+{
+	// LoadPcxSpriteList names a menu file that a Hellfire archive supplies "<name>@hf" (Hellfire's ui_art\heros.pcx has the monk as frame 3,
+	// where Diablo's has the new-hero portrait): each name draws its own art only, never the other game's
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_menus";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/ui_art/heros/0.0.png", { 120, 60, 60 }, index);
+		WriteArt(pack, "sprite/ui_art/heros@hf/0.0.png", { 60, 120, 60 }, index);
+		WriteArt(pack, "sprite/ui_art/title/0.0.png", { 60, 60, 120 }, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 24, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+	std::vector<uint8_t> diablo = Sprite();
+	std::vector<uint8_t> hellfire = Sprite();
+	std::vector<uint8_t> title = Sprite();
+	hd::RegisterSpriteList("ui_art\\heros.pcx", 0, ClxSpriteList { diablo.data() });
+	hd::RegisterSpriteList("ui_art\\heros@hf", 0, ClxSpriteList { hellfire.data() });
+	hd::RegisterSpriteList("ui_art\\title@hf", 0, ClxSpriteList { title.data() }); // Hellfire's own title, no art of its own
+	ClxDraw(out, { 0, 3 }, ClxSpriteList { diablo.data() }[0]);
+	ClxDraw(out, { 8, 3 }, ClxSpriteList { hellfire.data() }[0]);
+	ClxDraw(out, { 16, 3 }, ClxSpriteList { title.data() }[0]);
+	hd::Present(nullptr, pal);
+
+	SDL_Surface *argb = LoadFrame(dump);
+	ASSERT_NE(argb, nullptr);
+	ExpectColor(At(argb, 2, 2), 120, 60, 60, "Diablo's file draws Diablo's art");
+	ExpectColor(At(argb, 18, 2), 60, 120, 60, "Hellfire's file draws Hellfire's art");
+	const SDL_Color own = colors[Own];
+	ExpectColor(At(argb, 34, 2), own.r, own.g, own.b, "a Hellfire file without art keeps its pixels, not Diablo's art");
+	SDL_FreeSurface(argb);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 TEST(HdTest, TrackingBelongsToTheThreadThatDraws)
 {
 	// The loading thread draws art into surfaces of its own (the virtual gamepad's potions) while the main thread has a tracked

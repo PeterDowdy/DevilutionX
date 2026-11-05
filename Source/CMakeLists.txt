@@ -529,6 +529,7 @@ add_devilutionx_object_library(libdevilutionx_load_pcx
 target_link_dependencies(libdevilutionx_load_pcx
   PRIVATE
   DevilutionX::SDL
+  libdevilutionx_hd
   libdevilutionx_sdl2_to_1_2_backports
   libdevilutionx_log
   libdevilutionx_strings

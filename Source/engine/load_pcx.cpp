@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
 #include <utility>
 
 #ifdef DEBUG_PCX_TO_CL2_SIZE
@@ -16,6 +17,7 @@
 #include <SDL.h>
 #endif
 
+#include "engine/render/hd.hpp"
 #include "mpq/mpq_common.hpp"
 #include "utils/log.hpp"
 #include "utils/str_cat.hpp"
@@ -34,6 +36,27 @@
 #endif
 
 namespace devilution {
+
+#ifndef UNPACKED_MPQS
+namespace {
+
+/**
+ * The name HD art for a PCX goes under: its name, or "<name>@hf" when a Hellfire archive supplies the file. Hellfire ships its own
+ * versions of some menu files under Diablo's paths (ui_art\\heros.pcx gains the monk as frame 3, where Diablo has the new-hero
+ * portrait), so the two games' art can never stand in for each other.
+ */
+std::string HdArtName(const char *filename, const char *path)
+{
+	const AssetRef ref = FindAsset(path);
+	for (const auto &[priority, archive] : MpqArchives) {
+		if (priority >= 8000 && priority < 9000 && &archive == ref.archive)
+			return StrCat(filename, "@hf");
+	}
+	return filename;
+}
+
+} // namespace
+#endif
 
 OptionalOwnedClxSpriteList LoadPcxSpriteList(const char *filename, int numFramesOrFrameHeight, std::optional<uint8_t> transparentColor, SDL_Color *outPalette, bool logError)
 {
@@ -75,6 +98,8 @@ OptionalOwnedClxSpriteList LoadPcxSpriteList(const char *filename, int numFrames
 	OptionalOwnedClxSpriteList result = PcxToClx(handle, fileSize, numFramesOrFrameHeight, transparentColor, outPalette);
 	if (!result)
 		return std::nullopt;
+	if (hd::Enabled())
+		hd::RegisterSpriteList(HdArtName(filename, path), 0, ClxSpriteList { *result });
 	return result;
 #endif
 }

@@ -665,7 +665,10 @@ void Init()
 		if (file.rfind("sprite/", 0) != 0) continue;
 		std::string stem = file.substr(0, file.rfind('/'));
 		const size_t swap = stem.find('@', stem.rfind('/'));
-		if (swap != std::string::npos) stem.resize(swap);
+		if (swap != std::string::npos) {
+			ArtStems.insert(stem); // files registered under an "@" name of their own: Hellfire's menu files ("ui_art/heros@hf", load_pcx.cpp)
+			stem.resize(swap);
+		}
 		ArtStems.insert(std::move(stem));
 	}
 	if (const char *dump = std::getenv("DEVILUTIONX_HD_DUMP"); dump != nullptr) {
