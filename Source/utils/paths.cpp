@@ -96,9 +96,15 @@ std::string GetSdlBasePath()
 const std::string &BasePath()
 {
 	if (!basePath) {
-		basePath = GetSdlBasePath();
+		basePath = DefaultBasePath();
 	}
 	return *basePath;
+}
+
+const std::string &DefaultBasePath()
+{
+	static const std::string Path = GetSdlBasePath();
+	return Path;
 }
 
 const std::string &PrefPath()
