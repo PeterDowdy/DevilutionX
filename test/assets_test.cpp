@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "engine/assets.hpp"
@@ -132,5 +135,28 @@ TEST_F(HasLooseLogicAssetsTest, InactiveLooseModsAreInert)
 	EXPECT_FALSE(HasLooseLogicAssets());
 }
 #endif // !UNPACKED_MPQS
+
+TEST(ModRootPathsTest, BuiltInModsBesideTheExecutableSurviveADataDir)
+{
+	// `--data-dir` moves the base path, but builds and installs keep the built-in mods
+	// (Hellfire's `mods/hf`) beside the executable.
+	const std::string savedBasePath = paths::BasePath();
+	const std::vector<std::string> savedOverridePaths = OverridePaths;
+	const std::filesystem::path modsDir = std::filesystem::path(paths::DefaultBasePath()) / "mods";
+	const bool createdModsDir = !std::filesystem::exists(modsDir);
+	const std::string modName = "Test_ModRootPathsTest_builtin";
+	const std::string modDir = paths::DefaultBasePath() + "mods" DIRECTORY_SEPARATOR_STR + modName + DIRECTORY_SEPARATOR_STR;
+	RecursivelyCreateDir(modDir.c_str());
+	paths::SetBasePath("Test_ModRootPathsTest_data");
+
+	const std::string_view mods[] = { modName };
+	LoadModArchives(mods);
+	EXPECT_NE(std::find(OverridePaths.begin(), OverridePaths.end(), modDir), OverridePaths.end());
+
+	UnloadModArchives();
+	OverridePaths = savedOverridePaths;
+	paths::SetBasePath(savedBasePath);
+	std::filesystem::remove_all(createdModsDir ? modsDir : modsDir / modName);
+}
 
 } // namespace

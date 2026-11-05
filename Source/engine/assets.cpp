@@ -668,9 +668,36 @@ std::vector<std::string> ReadPackedModRequiredMods(std::span<const std::string> 
 } // namespace
 #endif
 
+namespace {
+
+/**
+ * The folders whose `mods/<name>/` directories hold loose mods: the pref path, the base path, and the executable's
+ * own folder when `--data-dir` moved the base path away from it. Builds and installs put the built-in mods there
+ * (Hellfire's `mods/hf`), and without it `--data-dir` would lose them: `--hellfire` then runs without its mod.
+ */
+std::vector<std::string> GetModRootPaths()
+{
+	std::vector<std::string> roots { paths::PrefPath(), paths::BasePath() };
+	const std::string &defaultBasePath = paths::DefaultBasePath();
+	if (defaultBasePath != paths::BasePath() && defaultBasePath != paths::PrefPath())
+		roots.push_back(defaultBasePath);
+	return roots;
+}
+
+/** The MPQ search paths, plus the executable's own folder for the packed built-in mods (`mods/hf.mpq`). */
+std::vector<std::string> GetModSearchPaths()
+{
+	std::vector<std::string> searchPaths = GetMPQSearchPaths();
+	if (std::find(searchPaths.begin(), searchPaths.end(), paths::DefaultBasePath()) == searchPaths.end())
+		searchPaths.push_back(paths::DefaultBasePath());
+	return searchPaths;
+}
+
+} // namespace
+
 ModManifest ReadModManifestByName(std::string_view name)
 {
-	const std::vector<std::string> searchPaths = GetMPQSearchPaths();
+	const std::vector<std::string> searchPaths = GetModSearchPaths();
 	constexpr std::string_view ManifestName = "manifest.ini";
 
 	// Loose mod directory (also how UNPACKED_MPQS builds ship their mods).
@@ -712,7 +739,7 @@ void LoadModArchives(std::span<const std::string_view> modnames)
 	// lower priority (loaded earlier, forms the base) and its dependents get higher priorities
 	// (loaded later, override it). `requires` is read from each packed mod's manifest in a
 	// pre-pass, because the real load below fixes priorities in iteration order.
-	const std::vector<std::string> searchPaths = GetMPQSearchPaths();
+	const std::vector<std::string> searchPaths = GetModSearchPaths();
 	std::vector<ModDependency> deps;
 	deps.reserve(modnames.size());
 	for (const std::string_view modname : modnames)
@@ -725,28 +752,23 @@ void LoadModArchives(std::span<const std::string_view> modnames)
 	std::vector<bool> hasLooseOverride(activeMods.size(), false);
 #endif
 
-	std::string targetPath;
+	const std::vector<std::string> modRoots = GetModRootPaths();
 	for (size_t i = 0; i < activeMods.size(); ++i) {
 		const std::string_view modname = activeMods[i];
-		targetPath = StrCat(paths::PrefPath(), "mods" DIRECTORY_SEPARATOR_STR, modname, DIRECTORY_SEPARATOR_STR);
-		if (DirectoryExists(targetPath)) {
-			OverridePaths.emplace_back(targetPath);
+		for (const std::string &root : modRoots) {
+			std::string targetPath = StrCat(root, "mods" DIRECTORY_SEPARATOR_STR, modname, DIRECTORY_SEPARATOR_STR);
+			if (DirectoryExists(targetPath)) {
+				OverridePaths.emplace_back(std::move(targetPath));
 #ifndef UNPACKED_MPQS
-			hasLooseOverride[i] = true;
+				hasLooseOverride[i] = true;
 #endif
-		}
-		targetPath = StrCat(paths::BasePath(), "mods" DIRECTORY_SEPARATOR_STR, modname, DIRECTORY_SEPARATOR_STR);
-		if (DirectoryExists(targetPath)) {
-			OverridePaths.emplace_back(targetPath);
-#ifndef UNPACKED_MPQS
-			hasLooseOverride[i] = true;
-#endif
+			}
 		}
 	}
 	OverridePaths.emplace_back(paths::PrefPath());
 
 	int priority = 10000;
-	auto paths = GetMPQSearchPaths();
+	auto paths = GetModSearchPaths();
 	for (size_t i = 0; i < activeMods.size(); ++i) {
 		const std::string_view modname = activeMods[i];
 		const std::string mpqName = StrCat("mods" DIRECTORY_SEPARATOR_STR, modname);
