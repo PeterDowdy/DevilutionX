@@ -11,10 +11,13 @@
 #include "engine/render/hd.hpp"
 #include "engine/render/scrollrt.h"
 #include "interfac.h"
+#include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
 #include "monster.h"
+#include "msg.h"
 #include "player.h"
+#include "tables/spelldat.h"
 #include "utils/log.hpp"
 #include "utils/ui_fwd.h"
 
@@ -32,6 +35,8 @@ size_t NextCommand = 0;
 int TicksToWait = 0;
 bool ScriptRead = false;
 bool LevelLoaded = false;
+bool ShowHero = false;
+bool KeepLight = false;
 std::string Path;
 std::string Palette;
 
@@ -59,11 +64,11 @@ void ReadScript()
 	LogInfo("HD showcase: {} commands from {}", Script.size(), ScriptFile());
 }
 
-/** Fully lit, nobody about: what the tiles look like, not the game. */
+/** Fully lit, nobody about: what the tiles look like, not the game. `hero` and `dim` keep the player and the game's own lighting. */
 void Settle()
 {
-	std::memset(dLight, 0, sizeof(dLight));
-	std::memset(dPlayer, 0, sizeof(dPlayer));
+	if (!KeepLight) std::memset(dLight, 0, sizeof(dLight));
+	if (!ShowHero) std::memset(dPlayer, 0, sizeof(dPlayer));
 	std::memset(dMonster, 0, sizeof(dMonster));
 	std::memset(dObject, 0, sizeof(dObject));
 	ActiveMonsterCount = 0;
@@ -137,6 +142,22 @@ void AfterGameTick()
 		ViewPosition = { Int(command, 0), Int(command, 1) };
 	} else if (command.verb == "wait") {
 		TicksToWait = Int(command, 0);
+	} else if (command.verb == "hero") {
+		ShowHero = true;
+	} else if (command.verb == "dim") {
+		KeepLight = true;
+	} else if (command.verb == "strip") {
+		const std::string what = command.args.empty() ? "" : command.args[0];
+		for (int slot = INVLOC_HEAD; slot < NUM_INVLOC; ++slot) {
+			const bool hand = slot == INVLOC_HAND_LEFT || slot == INVLOC_HAND_RIGHT;
+			if (what.empty() || (what == "hands") == hand)
+				MyPlayer->InvBody[slot].clear();
+		}
+		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "cast" && command.args.size() >= 2) {
+		const auto direction = static_cast<Direction>(Int(command, 1) & 7);
+		const Point target = MyPlayer->position.tile + Displacement(direction) * 3;
+		NetSendCmdLocParam3(true, CMD_SPELLXY, target, static_cast<uint16_t>(Int(command, 0)), static_cast<uint16_t>(SpellType::Spell), 0);
 	} else if (command.verb == "shot" && !command.args.empty()) {
 		WriteCamera(command.args[0]);
 		hd::RequestDump(command.args[0]);

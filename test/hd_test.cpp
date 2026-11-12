@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -481,6 +482,274 @@ TEST(HdTest, TrackingBelongsToTheThreadThatDraws)
 	EXPECT_EQ(hd::TrackPlane, nullptr) << "and ends untracked";
 	SDL_FreeSurface(pal);
 	fs::remove_all(pack);
+}
+
+/** Adds a tEXt chunk to a PNG file, right after its header chunk. */
+void AddPngText(const fs::path &file, const std::string &keyword, const std::string &text)
+{
+	std::ifstream in(file, std::ios::binary);
+	std::string png((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	in.close();
+	const std::string body = "tEXt" + keyword + std::string(1, '\0') + text;
+	uint32_t crc = 0xFFFFFFFFU;
+	for (const char ch : body) {
+		crc ^= static_cast<uint8_t>(ch);
+		for (int bit = 0; bit < 8; ++bit)
+			crc = (crc >> 1) ^ ((crc & 1) != 0 ? 0xEDB88320U : 0);
+	}
+	crc = ~crc;
+	const auto size = static_cast<uint32_t>(body.size() - 4);
+	std::string chunk;
+	for (int shift = 24; shift >= 0; shift -= 8)
+		chunk.push_back(static_cast<char>(size >> shift));
+	chunk += body;
+	for (int shift = 24; shift >= 0; shift -= 8)
+		chunk.push_back(static_cast<char>(crc >> shift));
+	png.insert(33, chunk); // the 8 bytes of the signature and the 25 of IHDR
+	std::ofstream(file, std::ios::binary) << png;
+}
+
+/** An effect layer: the two pictures side by side (laid over, added), ``w`` x ``h`` each, every pixel clear but those of ``set`` (x, y, ARGB). */
+void WriteEffect(const fs::path &pack, const std::string &file, int w, int h, const std::string &where, const std::vector<std::array<uint32_t, 3>> &set, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 2 * w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	SDL_FillRect(s, nullptr, 0);
+	for (const auto &px : set)
+		static_cast<uint32_t *>(s->pixels)[px[1] * (s->pitch / 4) + px[0]] = px[2];
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	if (!where.empty()) AddPngText(pack / file, "hdfx", where);
+	index << "image " << file << " -\n";
+}
+
+constexpr SDL_Color OtherArt = { 60, 120, 60, 255 };
+
+/**
+ * A 4x4 sprite at lo pixels x 8..11, y 8..11 with art of one colour and (``withFx``) an effect layer over lo pixels x 6..13, y 4..11, one
+ * file pixel per lo pixel: laid over at (6, 4) opaque, (7, 4) half see-through and (9, 9) (on the sprite); added at (8, 4), (10, 10) and
+ * (11, 10) (on the sprite), (12, 5). A second sprite with art is there for ``after``, which runs once the first has drawn. The palette has a
+ * full-bright entry when ``bright``. Returns the HD frame; ``again`` gets the frame presented after a NewScene.
+ */
+SDL_Surface *DrawEffectScenario(const std::string &name, bool withFx, bool bright, int width, const std::function<void(SDL_Surface *, ClxSprite)> &after = {}, SDL_Surface **again = nullptr)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	std::array<SDL_Color, 256> colors = Palette();
+	if (bright) colors[255] = { 255, 255, 255, 255 };
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/" + name + "/a/0.0.png", FrontArt, index);
+		WriteArt(pack, "sprite/" + name + "/b/0.0.png", OtherArt, index);
+		if (withFx) {
+			WriteEffect(pack, "fx/" + name + "/a/0.0.png", 8, 8, "-2 -4 8 8",
+			    { { 0, 0, 0xFF0A141EU }, { 1, 0, 0x80C86400U }, { 3, 5, 0xFF010203U },
+			        { 8 + 2, 0, 0xFF323C46U }, { 8 + 4, 6, 0xFF282828U }, { 8 + 5, 6, 0xFFC8C8C8U }, { 8 + 6, 1, 0xFF323C46U } },
+			    index);
+		}
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, width, 16, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::NewScene();
+	const Surface out(pal);
+
+	static std::vector<uint8_t> a, b;
+	a = Sprite();
+	b = Sprite();
+	hd::RegisterSpriteList(name + "\\A.CL2", 0, ClxSpriteList { a.data() });
+	hd::RegisterSpriteList(name + "\\B.CL2", 0, ClxSpriteList { b.data() });
+	ClxDraw(out, { 8, 11 }, ClxSpriteList { a.data() }[0]);
+	if (after) after(pal, ClxSpriteList { b.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	if (again != nullptr) {
+		fs::remove_all(dump);
+		fs::create_directories(dump);
+		hd::NewScene();
+		hd::Present(nullptr, pal);
+		*again = LoadFrame(dump);
+	}
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, EffectLayerIsLaidOverAndAddedBeyondTheSprite)
+{
+	SDL_Surface *again = nullptr;
+	SDL_Surface *frame = DrawEffectScenario("fx", true, true, 56, {}, &again);
+	ASSERT_NE(frame, nullptr);
+	ASSERT_NE(again, nullptr);
+	// lo pixel (x, y) is the HD block at (2x, 2y)
+	ExpectColor(At(frame, 12, 8), 10, 20, 30, "laid over, opaque, above and left of the sprite");
+	ExpectColor(At(frame, 13, 9), 10, 20, 30, "its last pixel");
+	ExpectColor(At(frame, 14, 8), 150, 100, 49, "laid over by its alpha");
+	ExpectColor(At(frame, 16, 8), 150, 160, 170, "added to the background");
+	ExpectColor(At(frame, 24, 10), 150, 160, 170, "added right of the sprite");
+	ExpectColor(At(frame, 18, 18), 1, 2, 3, "laid over the sprite's art");
+	ExpectColor(At(frame, 20, 20), 160, 100, 100, "added to the sprite's art");
+	ExpectColor(At(frame, 22, 20), 255, 255, 255, "added up to white");
+	ExpectColor(At(frame, 16, 16), FrontArt.r, FrontArt.g, FrontArt.b, "the art where the layer is clear");
+	ExpectColor(At(frame, 18, 8), Background.r, Background.g, Background.b, "the background where the layer is clear");
+	// A new scene in which the sprite is not drawn has no layer
+	ExpectColor(At(again, 12, 8), Background.r, Background.g, Background.b, "gone with the next scene");
+	ExpectColor(At(again, 18, 18), FrontArt.r, FrontArt.g, FrontArt.b, "the art is still there");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(again);
+}
+
+TEST(HdTest, WithoutAnEffectLayerNothingChanges)
+{
+	SDL_Surface *frame = DrawEffectScenario("nofx", false, true, 60);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 12, 8), Background.r, Background.g, Background.b, "no layer above the sprite");
+	ExpectColor(At(frame, 18, 18), FrontArt.r, FrontArt.g, FrontArt.b, "the art");
+	ExpectColor(At(frame, 20, 20), FrontArt.r, FrontArt.g, FrontArt.b, "the art, unlit");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, EffectLayerGivesWayToLaterDraws)
+{
+	// After the sprite: a draw that doesn't know the HD layer changes lo pixel (6, 4), and a sprite with art covers lo pixels x 8..11, y 4..7
+	SDL_Surface *frame = DrawEffectScenario("fxlater", true, true, 64, [](SDL_Surface *s, ClxSprite other) {
+		static_cast<uint8_t *>(s->pixels)[4 * s->pitch + 6] = Unique;
+		ClxDraw(Surface(s), { 8, 7 }, other);
+	});
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color unique = Palette()[Unique];
+	ExpectColor(At(frame, 12, 8), unique.r, unique.g, unique.b, "a pixel drawn later without HD art covers the layer");
+	ExpectColor(At(frame, 16, 8), OtherArt.r, OtherArt.g, OtherArt.b, "a sprite drawn later covers the layer");
+	ExpectColor(At(frame, 14, 8), 150, 100, 49, "the layer beside them");
+	ExpectColor(At(frame, 24, 10), 150, 160, 170, "and further off");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, EffectLayerFadesWithThePalette)
+{
+	// No full-bright entry: the palette's brightest channel is 200, so the layer shows at 200 / 248 (206 / 256)
+	SDL_Surface *frame = DrawEffectScenario("fxfade", true, false, 68);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 12, 8), 8, 16, 24, "laid over, faded");
+	ExpectColor(At(frame, 16, 8), 140, 148, 156, "added, faded");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, EffectLayerWithoutItsPlaceIsIgnored)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_fxbad";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/fxbad/a/0.0.png", FrontArt, index);
+		WriteEffect(pack, "fx/fxbad/a/0.0.png", 4, 4, "", { { 0, 0, 0xFF0A141EU }, { 1, 1, 0xFF0A141EU } }, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 72, 16, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::NewScene();
+	std::vector<uint8_t> a = Sprite();
+	hd::RegisterSpriteList("fxbad\\A.CL2", 0, ClxSpriteList { a.data() });
+	ClxDraw(Surface(pal), { 8, 11 }, ClxSpriteList { a.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 16, 16), FrontArt.r, FrontArt.g, FrontArt.b, "the art, with no layer over it");
+	ExpectColor(At(frame, 18, 18), FrontArt.r, FrontArt.g, FrontArt.b, "the art, with no layer over it");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+/** A CLX list of one 16x4 sprite of which only the right column is drawn. */
+std::vector<uint8_t> ThinSprite()
+{
+	std::vector<uint8_t> data = { 1, 0, 0, 0, 12, 0, 0, 0, 30, 0, 0, 0, 6, 0, 16, 0, 4, 0 };
+	for (int row = 0; row < 4; ++row)
+		data.insert(data.end(), { 15, 0xFF, Own });
+	return data;
+}
+
+/** In a free pack: the thin sprite at lo pixels x 8..23, y 4..7 with art over its whole rectangle, and an (empty) effect layer or none. */
+SDL_Surface *DrawReachScenario(const std::string &name, bool withFx, int width)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\nsilhouette free\n";
+		WriteArt(pack, "sprite/" + name + "/a/0.0.png", FrontArt, index);
+		if (withFx) WriteEffect(pack, "fx/" + name + "/a/0.0.png", 1, 1, "0 0 1 1", {}, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, width, 12, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::NewScene();
+	static std::vector<uint8_t> thin;
+	thin = ThinSprite();
+	hd::RegisterSpriteList(name + "\\A.CL2", 0, ClxSpriteList { thin.data() });
+	ClxDraw(Surface(pal), { 8, 7 }, ClxSpriteList { thin.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, ArtWithAnEffectLayerIsDrawnWhole)
+{
+	SDL_Surface *bound = DrawReachScenario("reach", false, 76);
+	SDL_Surface *whole = DrawReachScenario("reachfx", true, 80);
+	ASSERT_NE(bound, nullptr);
+	ASSERT_NE(whole, nullptr);
+	// The sprite's own pixels are at lo x 23; lo x 8 is 15 pixels from them
+	ExpectColor(At(bound, 44, 8), FrontArt.r, FrontArt.g, FrontArt.b, "art next to the sprite's pixels");
+	ExpectColor(At(bound, 16, 8), Background.r, Background.g, Background.b, "art far from the sprite's pixels is left out");
+	ExpectColor(At(whole, 44, 8), FrontArt.r, FrontArt.g, FrontArt.b, "art next to the sprite's pixels, with an effect layer");
+	ExpectColor(At(whole, 16, 8), FrontArt.r, FrontArt.g, FrontArt.b, "art far from the sprite's pixels shows with an effect layer");
+	SDL_FreeSurface(bound);
+	SDL_FreeSurface(whole);
 }
 
 } // namespace

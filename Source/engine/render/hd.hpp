@@ -26,12 +26,22 @@
  *                                             art only, it never falls back to the plain path's (Diablo's) art.
  *   tile/<tileset>/<pillar>.png               a level pillar (.min entry): 64 x 32*rows original pixels
  *   palettes/<mpq path>.pal                   768-byte RGB reference palettes
+ *   fx/<mpq path without ext>/<group>.<frame>.png   an effect layer for that sprite frame (a spell cast's glow), see below
  *
  * "silhouette free": sprite art is no longer bound to the footprint of the original sprite. Where it is opaque
  * outside the footprint it is drawn there (the pixel takes the lighting of the nearest pixel of the sprite), and
  * where it is transparent inside the footprint what was behind the sprite shows instead of the original pixel,
  * HD art of whatever was behind included (one layer deep). Without the line, art shows only where the original
  * sprite has pixels, and transparent art shows the original pixel. Pillars (tiles) are not affected.
+ *
+ * Effect layers ("fx/..."): light that a frame's art gives off, drawn in true colour over the composed frame wherever the sprite is drawn in
+ * the game view. The file holds two pictures side by side: the left half is laid over the frame by its alpha, the right half is added to it
+ * (black adds nothing). Its tEXt chunk "hdfx" = "<dx> <dy> <w> <h>" places it in original pixels relative to the sprite's top-left, so it can
+ * reach beyond the sprite's own rectangle (above it, too); the picture is sampled proportionally over that rectangle. Neither half is shaded
+ * by the game's lighting (it is light), only by palette fades. Whatever is drawn after the sprite (a wall in front, a later sprite, the
+ * panels, the cursor) covers the layer as it covers the sprite; parts of the effect behind the figure are left out of the file by whoever
+ * makes it. A frame with an effect layer is also free of the limit on how far outside the original footprint its art may be drawn
+ * (silhouette free), since a cast's pose is not bound to the original's.
  */
 
 #include <cstdint>
@@ -53,6 +63,7 @@ struct PixelProvenance {
 	uint8_t source;  ///< the art's own colour index, before lighting, TRN or blending
 	uint8_t written; ///< the index written to the PalSurface
 	uint8_t free;    ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp); 2 = added outside the sprite's footprint
+	uint8_t under;   ///< drawn as foliage (TrackUnder): ground cover, which effect layers stay on top of
 	uint32_t serial; ///< which draw wrote the pixel
 };
 
@@ -85,7 +96,7 @@ inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackSerial };
 	}
 }
 
@@ -99,7 +110,7 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackSerial };
 	}
 }
 
@@ -150,6 +161,12 @@ void SetTarget(SDL_Surface *palSurface);
  * whatever DEVILUTIONX_HD_DUMP_EVERY says (0 there turns the periodic dumps off). Does nothing without DEVILUTIONX_HD_DUMP.
  */
 void RequestDump(std::string_view name);
+
+/**
+ * The game view is about to be drawn anew (DrawGame), or the screen was cleared: forgets the effect layers of the sprites drawn into the last
+ * one. Until then they are composed into every presented frame, as the pixels of their sprites are.
+ */
+void NewScene();
 
 /** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
 void SetTileset(std::string_view name);

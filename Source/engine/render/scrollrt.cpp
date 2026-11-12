@@ -1247,6 +1247,7 @@ void DrawGame(const Surface &fullOut, Point position, Displacement offset)
 	}
 
 	UpdateMissilesRendererData();
+	hd::NewScene();
 
 	// Draw areas moving in and out of the screen
 	if (MyPlayer->isWalking()) {
@@ -1289,6 +1290,7 @@ void DrawGame(const Surface &fullOut, Point position, Displacement offset)
 
 	if (*GetOptions().Graphics.zoom) {
 		Zoom(fullOut.subregionY(0, gnViewportHeight));
+		hd::NewScene(); // the view was drawn at half size and doubled: effect layers have no place in it
 	}
 
 #ifdef DUN_RENDER_STATS
@@ -1747,6 +1749,7 @@ void ClearScreenBuffer()
 
 	assert(PalSurface != nullptr);
 	SDL_FillSurfaceRect(PalSurface, nullptr, 0);
+	hd::NewScene();
 }
 
 #ifdef _DEBUG

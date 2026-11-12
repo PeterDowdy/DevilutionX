@@ -8,10 +8,14 @@
  *   map <dun> <dungeon type 1-6> <x> <y> [palette]   warp to a chunk (an MPQ path, or an absolute path of a loose .dun), viewing square x, y
  *   view <x> <y>                                     centre the camera on a square
  *   wait <ticks>
+ *   hero                                             from here on the player is drawn (give it before `map`)
+ *   dim                                              from here on the level keeps the game's own lighting (give it before `map`)
+ *   strip [hands|armour]                             the player takes off what they hold, what they wear, or both
+ *   cast <spell id> <direction 0-7>                  the player casts a spell they know, three squares that way
  *   shot <name>                                      dump <name>.json (the camera) and hd-/low-/ids-<name>.png
  *   quit
  *
- * Every tick the level is fully lit, monsters are gone and the player is not drawn.
+ * Every tick the level is fully lit, monsters are gone and the player is not drawn (unless `dim` and `hero` say otherwise).
  */
 #pragma once
 

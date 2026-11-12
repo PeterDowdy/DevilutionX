@@ -52,6 +52,10 @@ struct HdImage {
 	std::array<uint8_t, 768> ref; ///< the palette the art was authored against
 	bool hasRef = false;
 	std::vector<uint8_t> reach; ///< per original pixel: the art is opaque somewhere in its block (free silhouettes; made when first needed)
+	uint32_t fx = 0;            ///< a sprite frame's effect layer ("fx/..."), an image of its own; looked up when the frame is first drawn into the game view
+	bool fxLooked = false;
+	int fxDx = 0; ///< an effect layer: where its rectangle (loW x loH original pixels) starts, relative to its sprite's top-left
+	int fxDy = 0;
 };
 
 struct SpriteEntry {
@@ -103,6 +107,16 @@ bool FreeSilhouette = false;
 std::vector<PixelProvenance> BehindProv;
 std::vector<uint8_t> BehindIdx;
 uint32_t NextSerial = 0;
+
+/** The effect layer of a sprite drawn into the game view since NewScene: composed over the frame (ComposeOverlays). */
+struct Overlay {
+	uint32_t fx;
+	int left, top;      ///< where the layer's rectangle starts, in PalSurface coordinates
+	int x0, y0, x1, y1; ///< the part of it inside the surface the sprite was drawn into
+	uint32_t serial;    ///< the sprite's draw: pixels drawn later cover the layer
+	std::vector<uint8_t> seen; ///< the PalSurface in x0..x1, y0..y1 as the sprite's draw left it: art without HD leaves no other trace of drawing later
+};
+std::vector<Overlay> Overlays;
 
 std::vector<uint32_t> Frame;
 SDL_Texture *FrameTexture = nullptr;
@@ -224,6 +238,54 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 	return id;
 }
 
+/** The text of the PNG's tEXt chunk ``keyword`` (ahead of the pixel data), or nothing. */
+std::string ReadPngText(const std::string &path, std::string_view keyword)
+{
+	std::ifstream in(path, std::ios::binary);
+	char head[8];
+	if (!in.read(head, 8)) return {};
+	while (in.read(head, 8)) {
+		const auto *b = reinterpret_cast<const uint8_t *>(head);
+		const uint32_t size = (static_cast<uint32_t>(b[0]) << 24) | (static_cast<uint32_t>(b[1]) << 16) | (static_cast<uint32_t>(b[2]) << 8) | b[3];
+		const std::string_view type(head + 4, 4);
+		if (type == "IDAT" || type == "IEND") break;
+		if (type != "tEXt" || size > 4096) {
+			in.seekg(static_cast<std::streamoff>(size) + 4, std::ios::cur);
+			continue;
+		}
+		std::string data(size, '\0');
+		if (!in.read(data.data(), size)) break;
+		in.seekg(4, std::ios::cur);
+		if (data.size() > keyword.size() && data.compare(0, keyword.size(), keyword) == 0 && data[keyword.size()] == '\0')
+			return data.substr(keyword.size() + 1);
+	}
+	return {};
+}
+
+/**
+ * The effect layer of the sprite frame ``entry``, drawn with the art ``image``: "fx/<path>/<group>.<frame>.png" beside
+ * "sprite/<path>/<group>.<frame>.png". 0 when the pack has none, or the file doesn't say where it goes.
+ */
+uint32_t FxOf(uint32_t image, const SpriteEntry &entry)
+{
+	if (Images[image].fxLooked) return Images[image].fx;
+	Images[image].fxLooked = true;
+	const std::string file = "fx" + entry.Key({}).substr(std::strlen("sprite"));
+	if (Manifest.count(file) == 0) return 0;
+	int dx = 0, dy = 0, w = 0, h = 0;
+	std::istringstream words(ReadPngText(PackDir + "/" + file, "hdfx"));
+	if (!(words >> dx >> dy >> w >> h) || w <= 0 || h <= 0) {
+		LogError("HD: {} doesn't say where it goes (tEXt hdfx)", file);
+		return 0;
+	}
+	const uint32_t fx = ImageId(file, w, h);
+	if (fx == 0 || Images[fx].w < 2) return 0;
+	Images[fx].fxDx = dx;
+	Images[fx].fxDy = dy;
+	Images[image].fx = fx;
+	return fx;
+}
+
 bool EnsurePlane()
 {
 	if (Target == nullptr) return false;
@@ -231,6 +293,7 @@ bool EnsurePlane()
 		PlanePitch = Target->pitch;
 		PlaneHeight = Target->h;
 		Plane.assign(static_cast<size_t>(PlanePitch) * PlaneHeight, PixelProvenance {});
+		Overlays.clear();
 		if (FreeSilhouette) {
 			BehindProv.assign(Plane.size(), PixelProvenance {});
 			BehindIdx.assign(Plane.size(), 0);
@@ -255,8 +318,16 @@ struct FreeDraw {
 	uint32_t image = 0;
 	int left = 0, top = 0;
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+	bool whole = false; ///< no limit on how far from the sprite's own pixels its art is drawn (art with an effect layer)
 };
 thread_local FreeDraw Free;
+
+/** The sprite draw in progress, when its art has an effect layer: End adds it to Overlays. */
+struct FxDraw {
+	uint32_t fx = 0;
+	int x0 = 0, y0 = 0, x1 = 0, y1 = 0; ///< the surface the sprite is drawn into
+};
+thread_local FxDraw Fx;
 
 /** A tracked off-screen buffer (TrackOffscreen) and its provenance plane, indexed like its pixels (row pitch). */
 struct Offscreen {
@@ -283,6 +354,7 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 	const auto *pixels = static_cast<const uint8_t *>(src.surface->pixels);
 	const int srcPitch = src.surface->pitch;
 	std::vector<PixelProvenance> row;
+	const uint32_t serial = ++NextSerial; // a copy is a draw of its own: it covers the effect layers of the sprites drawn before it
 	for (int y = 0; y < r.h; ++y) {
 		const int ty = dy + (self && dy > sy ? r.h - 1 - y : y), fy = sy + (self && dy > sy ? r.h - 1 - y : y);
 		PixelProvenance *to = &Plane[static_cast<size_t>(ty) * PlanePitch + dx];
@@ -292,6 +364,7 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 			if (skipZero && idx[x] == 0) continue;
 			if (off == nullptr && !self) {
 				to[x] = {};
+				to[x].serial = serial;
 				continue;
 			}
 			PixelProvenance p = self ? row[x] : off->plane[static_cast<size_t>(fy) * srcPitch + sx + x];
@@ -299,6 +372,7 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 				p.left = static_cast<int16_t>(p.left + dx - sx);
 				p.top = static_cast<int16_t>(p.top + dy - sy);
 			}
+			p.serial = serial;
 			to[x] = p;
 		}
 	}
@@ -308,6 +382,7 @@ void Begin(const Surface &out, uint32_t image, int left, int top, bool free = fa
 {
 	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackSerial };
 	Free.on = false;
+	Fx.fx = 0;
 	if (!Active) return;
 	if (out.surface != Target) {
 		Offscreen *off = FindOffscreen(out.surface);
@@ -367,6 +442,76 @@ void ComputeReach(HdImage &img)
 }
 
 /**
+ * ExtendFootprint for art with an effect layer (a spell cast): no limit on how far from the sprite's own pixels the art is drawn, since the
+ * pose of a cast is not bound to the original's. Two passes over the art's rectangle give each pixel its nearest drawn pixel by chessboard
+ * distance (a near-black one counts as 3 further away, as below).
+ */
+void ExtendWholeArt(const HdImage &img)
+{
+	const int w = Free.x1 - Free.x0, h = Free.y1 - Free.y0;
+	std::vector<int> dist(static_cast<size_t>(w) * h, 1 << 20);
+	std::vector<int> donor(dist.size(), -1); // the drawn pixel a pixel takes after, as an index into the rectangle
+	bool any = false;
+	for (int y = 0; y < h; ++y) {
+		for (int x = 0; x < w; ++x) {
+			const PixelProvenance &q = Plane[static_cast<size_t>(Free.y0 + y) * PlanePitch + Free.x0 + x];
+			if (q.serial != TrackSerial) continue;
+			const uint8_t *ref = &img.ref[q.source * 3];
+			const size_t i = static_cast<size_t>(y) * w + x;
+			dist[i] = img.hasRef && ref[0] + ref[1] + ref[2] < 90 ? 3 : 0;
+			donor[i] = static_cast<int>(i);
+			any = true;
+		}
+	}
+	if (!any) return; // the sprite drew nothing here (clipped away)
+	const auto take = [&](size_t i, int qx, int qy) {
+		if (qx < 0 || qx >= w || qy < 0 || qy >= h) return;
+		const size_t q = static_cast<size_t>(qy) * w + qx;
+		if (dist[q] + 1 < dist[i]) {
+			dist[i] = dist[q] + 1;
+			donor[i] = donor[q];
+		}
+	};
+	for (int y = 0; y < h; ++y) {
+		for (int x = 0; x < w; ++x) {
+			const size_t i = static_cast<size_t>(y) * w + x;
+			take(i, x - 1, y);
+			take(i, x - 1, y - 1);
+			take(i, x, y - 1);
+			take(i, x + 1, y - 1);
+		}
+	}
+	for (int y = h - 1; y >= 0; --y) {
+		for (int x = w - 1; x >= 0; --x) {
+			const size_t i = static_cast<size_t>(y) * w + x;
+			take(i, x + 1, y);
+			take(i, x + 1, y + 1);
+			take(i, x, y + 1);
+			take(i, x - 1, y + 1);
+		}
+	}
+	struct Extension {
+		size_t at;
+		PixelProvenance donor;
+	};
+	std::vector<Extension> extend; // applied after the scan, as below
+	for (int y = 0; y < h; ++y) {
+		for (int x = 0; x < w; ++x) {
+			const size_t at = static_cast<size_t>(Free.y0 + y) * PlanePitch + Free.x0 + x;
+			const int d = donor[static_cast<size_t>(y) * w + x];
+			if (d < 0 || Plane[at].serial == TrackSerial) continue;
+			if (img.reach[static_cast<size_t>(Free.y0 + y - Free.top) * img.loW + (Free.x0 + x - Free.left)] == 0) continue;
+			extend.push_back({ at, Plane[static_cast<size_t>(Free.y0 + d / w) * PlanePitch + Free.x0 + d % w] });
+		}
+	}
+	auto *pixels = static_cast<uint8_t *>(Target->pixels);
+	for (const Extension &e : extend) {
+		pixels[e.at] = e.donor.written;
+		Plane[e.at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), e.donor.source, e.donor.written, 2, 0, TrackSerial };
+	}
+}
+
+/**
  * Draws the art's pixels outside the sprite's footprint into the PalSurface: each takes the index, and so the lighting,
  * of the nearest pixel the sprite drew (preferring one that isn't near black), and is recorded as the sprite's own (free == 2: foliage drawn
  * later goes under it, see TrackUnder).
@@ -375,6 +520,10 @@ void ExtendFootprint()
 {
 	HdImage &img = Images[Free.image];
 	if (img.reach.empty()) ComputeReach(img);
+	if (Free.whole) {
+		ExtendWholeArt(img);
+		return;
+	}
 	auto *pixels = static_cast<uint8_t *>(Target->pixels);
 	constexpr int Radius = 6;
 	struct Extension {
@@ -417,8 +566,31 @@ void ExtendFootprint()
 		donors.push_back(*e.donor);
 	for (size_t i = 0; i < extend.size(); ++i) {
 		pixels[extend[i].at] = donors[i].written;
-		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, TrackSerial };
+		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, 0, TrackSerial };
 	}
+}
+
+/** The sprite just drawn has an effect layer: composed over the frame from now on, where the sprite's surface lets it. */
+void AddOverlay()
+{
+	const HdImage &img = Images[Fx.fx];
+	Overlay o { Fx.fx, TrackLeft + img.fxDx, TrackTop + img.fxDy, 0, 0, 0, 0, TrackSerial, {} };
+	o.x0 = std::max(o.left, Fx.x0);
+	o.y0 = std::max(o.top, Fx.y0);
+	o.x1 = std::min(o.left + img.loW, Fx.x1);
+	o.y1 = std::min(o.top + img.loH, Fx.y1);
+	if (o.x0 >= o.x1 || o.y0 >= o.y1) return;
+	const int w = o.x1 - o.x0;
+	o.seen.resize(static_cast<size_t>(w) * (o.y1 - o.y0));
+	for (int y = o.y0; y < o.y1; ++y)
+		std::memcpy(&o.seen[static_cast<size_t>(y - o.y0) * w], static_cast<const uint8_t *>(Target->pixels) + static_cast<size_t>(y) * Target->pitch + o.x0, w);
+	for (Overlay &earlier : Overlays) {
+		if (earlier.fx == o.fx && earlier.left == o.left && earlier.top == o.top) { // the same sprite drawn again: one layer, at its later draw
+			earlier = std::move(o);
+			return;
+		}
+	}
+	Overlays.push_back(std::move(o));
 }
 
 void End()
@@ -426,6 +598,10 @@ void End()
 	if (Free.on) {
 		ExtendFootprint();
 		Free.on = false;
+	}
+	if (Fx.fx != 0) {
+		AddOverlay();
+		Fx.fx = 0;
 	}
 	TrackPlane = Saved.plane;
 	TrackBase = Saved.base;
@@ -552,6 +728,69 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 	}
 }
 
+/** How far the palette is faded in, 0..256: the game fades by scaling the whole palette, and a palette that isn't faded has a full-bright entry. */
+uint32_t FadeLevel(const SDL_Color *live)
+{
+	int top = 0;
+	for (int i = 0; i < 256; ++i)
+		top = std::max({ top, static_cast<int>(live[i].r), static_cast<int>(live[i].g), static_cast<int>(live[i].b) });
+	return top >= 248 ? 256 : static_cast<uint32_t>(top) * 256 / 248;
+}
+
+/**
+ * Draws the effect layers over the composed frame: the left half of each by its alpha, the right half added. A pixel takes its part only
+ * while nothing was drawn there after the layer's sprite: no HD art with a later serial (foliage aside, as for the art a free silhouette
+ * adds), and no art without HD, which shows as a pixel that no longer holds what it held when the sprite had drawn (a wall in front, a
+ * missile, the automap's lines, the panels, the cursor). Art without HD that writes the very index that was there goes unnoticed.
+ */
+void ComposeOverlays(SDL_Surface *pal)
+{
+	if (PlanePitch != pal->pitch || PlaneHeight != pal->h) return;
+	const uint32_t fade = FadeLevel(pal->format->palette->colors);
+	if (fade == 0) return;
+	const int n = Scale;
+	const int outW = pal->w * n;
+	const auto *pixels = static_cast<const uint8_t *>(pal->pixels);
+	for (const Overlay &o : Overlays) {
+		const HdImage &img = Images[o.fx];
+		const int half = img.w / 2;
+		for (int y = std::max(o.y0, 0); y < std::min(o.y1, pal->h); ++y) {
+			const int sy = y - o.top;
+			for (int x = std::max(o.x0, 0); x < std::min(o.x1, pal->w); ++x) {
+				const size_t at = static_cast<size_t>(y) * pal->pitch + x;
+				const PixelProvenance &p = Plane[at];
+				if (p.image != 0 && p.written == pixels[at] && static_cast<int32_t>(p.serial - o.serial) > 0) {
+					if (p.under == 0) continue;
+				} else if (pixels[at] != o.seen[static_cast<size_t>(y - o.y0) * (o.x1 - o.x0) + (x - o.x0)]) {
+					continue;
+				}
+				const int sx = x - o.left;
+				int us[8];
+				for (int i = 0; i < n; ++i)
+					us[i] = std::min(half - 1, (sx * n + i) * half / (img.loW * n));
+				for (int j = 0; j < n; ++j) {
+					const int v = std::min(img.h - 1, (sy * n + j) * img.h / (img.loH * n));
+					const uint32_t *row = &img.px[static_cast<size_t>(v) * img.w];
+					uint32_t *out = &Frame[(static_cast<size_t>(y) * n + j) * outW + static_cast<size_t>(x) * n];
+					for (int i = 0; i < n; ++i) {
+						const uint32_t over = row[us[i]];
+						const uint32_t glow = row[half + us[i]] & 0xFFFFFFU;
+						const uint32_t a = over >> 24;
+						if (a == 0 && glow == 0) continue;
+						uint32_t c[3] = { (out[i] >> 16) & 0xFF, (out[i] >> 8) & 0xFF, out[i] & 0xFF };
+						for (int k = 0; k < 3; ++k) {
+							const int shift = 16 - 8 * k;
+							c[k] = (c[k] * (255 - a) + ((((over >> shift) & 0xFF) * fade) >> 8) * a) / 255;
+							c[k] = std::min<uint32_t>(255, c[k] + ((((glow >> shift) & 0xFF) * fade) >> 8));
+						}
+						out[i] = 0xFF000000U | (c[0] << 16) | (c[1] << 8) | c[2];
+					}
+				}
+			}
+		}
+	}
+}
+
 void Compose(SDL_Surface *pal)
 {
 	Frame.resize(static_cast<size_t>(pal->w) * Scale * pal->h * Scale);
@@ -565,6 +804,7 @@ void Compose(SDL_Surface *pal)
 	ComposeRows(pal, 0, std::min(pal->h, rows));
 	for (std::thread &w : workers)
 		w.join();
+	if (!Overlays.empty()) ComposeOverlays(pal);
 }
 
 void WriteDump(SDL_Surface *pal, const std::string &name)
@@ -782,13 +1022,20 @@ void SetTileset(std::string_view name)
 	Tileset = name;
 }
 
+void NewScene()
+{
+	Overlays.clear();
+}
+
 SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn)
 {
 	uint32_t image = 0;
+	const SpriteEntry *drawn = nullptr;
 	if (Active) {
 		const auto found = Sprites.find(clx.pixelData());
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
 			const SpriteEntry &entry = found->second;
+			drawn = &entry;
 			// The most specific art the pack has: the draw's own swap on top of the sprite's, the sprite's swap, itself
 			if (const std::string_view unique = TrnName(drawTrn); !unique.empty()) {
 				image = ImageId(entry.Key(entry.recolour + "+" + std::string(unique)), clx.width(), clx.height());
@@ -806,6 +1053,11 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		}
 	}
 	Begin(out, image, out.region.x + position.x, out.region.y + position.y - clx.height() + 1, true);
+	if (image == 0 || out.surface != Target || TrackPlane != Plane.data() || TrackImage != image) return; // not tracked in the game's own surface
+	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
+		Fx = { fx, std::max(out.region.x, 0), std::max(out.region.y, 0), std::min(out.region.x + out.region.w, Target->w), std::min(out.region.y + out.region.h, Target->h) };
+		Free.whole = Free.on;
+	}
 }
 
 SpriteScope::~SpriteScope()
