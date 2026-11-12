@@ -12,6 +12,12 @@
  *   dim                                              from here on the level keeps the game's own lighting (give it before `map`)
  *   strip [hands|armour]                             the player takes off what they hold, what they wear, or both
  *   cast <spell id> <direction 0-7>                  the player casts a spell they know, three squares that way
+ *   equip <head|chest|left|right> <item name>        the player puts on a plain item of that base name ("Chain Mail", "Short Sword")
+ *   face <direction 0-7>                             the player stands facing that way
+ *   attack <direction 0-7>                           the player swings at the next square that way
+ *   walk <direction 0-7> [squares]                   the player walks that way (one square unless told)
+ *   die [keep]                                       the player dies where they stand; a death in the dungeon drops everything worn, so
+ *                                                    it plays the light armour's death: `keep` leaves the armour on (as a duel's death does)
  *   shot <name>                                      dump <name>.json (the camera) and hd-/low-/ids-<name>.png
  *   quit
  *

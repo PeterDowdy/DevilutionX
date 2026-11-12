@@ -42,6 +42,17 @@
  * panels, the cursor) covers the layer as it covers the sprite; parts of the effect behind the figure are left out of the file by whoever
  * makes it. A frame with an effect layer is also free of the limit on how far outside the original footprint its art may be drawn
  * (silhouette free), since a cast's pose is not bound to the original's.
+ *
+ * Art larger than its sprite ("hdbox"): a sprite frame's picture may cover a rectangle other than the sprite's own, so that a figure that
+ * reaches past the original's canvas (a raised sword's tip, a foot) is drawn whole instead of being cut at it. Its tEXt chunk "hdbox" =
+ * "<dx> <dy> <w> <h>" is the rectangle the picture covers, in original pixels relative to the sprite's top-left ("-8 -12 112 108" on a
+ * 96 x 96 sprite: 8 more on either side, 12 more on top; words after the four numbers are for tools and ignored here); the picture is
+ * sampled proportionally over it. Inside the sprite's footprint
+ * nothing else changes. With "silhouette free" the art outside the footprint is drawn as that line describes, the part beyond the sprite's
+ * rectangle included, and without the limit on how far from the sprite's own pixels (as for a frame with an effect layer); it is clipped
+ * to the surface the sprite is drawn into, covered by whatever is drawn after the sprite, and absent while the sprite itself draws no
+ * pixel (clipped away at the edge of the view). Without "silhouette free" a box only says where the picture sits. Effect layers stay
+ * relative to the sprite's top-left. A frame without the chunk is drawn exactly as before.
  */
 
 #include <cstdint>

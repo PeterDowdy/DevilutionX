@@ -1,9 +1,11 @@
 #include "hd_showcase.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <sstream>
+#include <utility>
 #include <vector>
 
 #include "control/control.hpp"
@@ -158,6 +160,33 @@ void AfterGameTick()
 		const auto direction = static_cast<Direction>(Int(command, 1) & 7);
 		const Point target = MyPlayer->position.tile + Displacement(direction) * 3;
 		NetSendCmdLocParam3(true, CMD_SPELLXY, target, static_cast<uint16_t>(Int(command, 0)), static_cast<uint16_t>(SpellType::Spell), 0);
+	} else if (command.verb == "equip" && command.args.size() >= 2) {
+		static const std::pair<const char *, inv_body_loc> Slots[] = { { "head", INVLOC_HEAD }, { "chest", INVLOC_CHEST }, { "left", INVLOC_HAND_LEFT }, { "right", INVLOC_HAND_RIGHT } };
+		std::string name = command.args[1];
+		for (size_t i = 2; i < command.args.size(); ++i)
+			name += " " + command.args[i];
+		bool found = false;
+		for (const auto &[word, slot] : Slots) {
+			if (command.args[0] != word) continue;
+			for (size_t i = 0; i < AllItemsList.size() && !found; ++i) {
+				if (AllItemsList[i].iName != name) continue;
+				InitializeItem(MyPlayer->InvBody[slot], static_cast<_item_indexes>(i));
+				found = true;
+			}
+		}
+		if (!found) LogError("HD showcase: nothing to equip as '{}' in '{}'", name, command.args[0]);
+		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "face" && !command.args.empty()) {
+		StartStand(*MyPlayer, static_cast<Direction>(Int(command, 0) & 7));
+	} else if (command.verb == "attack" && !command.args.empty()) {
+		const auto direction = static_cast<Direction>(Int(command, 0) & 7);
+		NetSendCmdLoc(MyPlayerId, true, CMD_SATTACKXY, MyPlayer->position.tile + Displacement(direction));
+	} else if (command.verb == "walk" && !command.args.empty()) {
+		const auto direction = static_cast<Direction>(Int(command, 0) & 7);
+		NetSendCmdLoc(MyPlayerId, true, CMD_WALKXY, MyPlayer->position.tile + Displacement(direction) * std::max(Int(command, 1), 1));
+	} else if (command.verb == "die") {
+		const bool keep = !command.args.empty() && command.args[0] == "keep";
+		StartPlayerKill(*MyPlayer, keep ? DeathReason::Unknown : DeathReason::MonsterOrTrap);
 	} else if (command.verb == "shot" && !command.args.empty()) {
 		WriteCamera(command.args[0]);
 		hd::RequestDump(command.args[0]);

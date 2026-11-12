@@ -752,5 +752,164 @@ TEST(HdTest, ArtWithAnEffectLayerIsDrawnWhole)
 	SDL_FreeSurface(whole);
 }
 
+constexpr SDL_Color TipArt = { 60, 60, 120, 255 };
+constexpr SDL_Color CornerArt = { 120, 120, 60, 255 };
+
+/**
+ * Art for the 4x4 sprite that covers more than it: 12 x 14 original pixels starting 4 left of and 8 above the sprite's top-left (24 x 28 at
+ * scale 2). Clear but for the sprite's own rectangle (``FrontArt``, its top-left pixel ``CornerArt``), a tip above it (the sprite's second
+ * column, all 8 rows above), a foot below it (its third column, 2 rows) and one pixel 4 left of its second row, all ``TipArt``.
+ */
+void WriteBoxedArt(const fs::path &pack, const std::string &file, const std::string &box, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 24, 28, 32, SDL_PIXELFORMAT_ARGB8888);
+	SDL_FillRect(s, nullptr, 0);
+	const auto fill = [s](int x, int y, int w, int h, SDL_Color c) {
+		SDL_Rect r = { 2 * x, 2 * y, 2 * w, 2 * h };
+		SDL_FillRect(s, &r, SDL_MapRGBA(s->format, c.r, c.g, c.b, 255));
+	};
+	fill(4, 8, 4, 4, FrontArt);
+	fill(4, 8, 1, 1, CornerArt);
+	fill(5, 0, 1, 8, TipArt);
+	fill(6, 12, 1, 2, TipArt);
+	fill(0, 9, 1, 1, TipArt);
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	if (!box.empty()) AddPngText(pack / file, "hdbox", box);
+	index << "image " << file << " palettes/test.pal\n";
+}
+
+/**
+ * The 4x4 sprite at lo pixels x 8..11, y 8..11 of a surface 16 high, with the boxed art above (its tip at lo x 9, y 0..7; its foot at x 10,
+ * y 12..13; its far pixel at (4, 9)), in a pack that is ``free`` or not, drawn into the rows from ``clipTop`` down. ``withFx`` adds the
+ * effect layer of DrawEffectScenario; a second sprite with art is there for ``after``, which runs once the first has drawn.
+ */
+SDL_Surface *DrawBoxScenario(const std::string &name, const std::string &box, bool free, int width, bool withFx = false, int clipTop = 0, const std::function<void(SDL_Surface *, ClxSprite)> &after = {}, SDL_Surface **palOut = nullptr)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	std::array<SDL_Color, 256> colors = Palette();
+	colors[255] = { 255, 255, 255, 255 };
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		if (free) index << "silhouette free\n";
+		WriteBoxedArt(pack, "sprite/" + name + "/a/0.0.png", box, index);
+		WriteArt(pack, "sprite/" + name + "/b/0.0.png", OtherArt, index);
+		if (withFx) WriteEffect(pack, "fx/" + name + "/a/0.0.png", 8, 8, "-2 -4 8 8", { { 0, 0, 0xFF0A141EU }, { 8 + 6, 1, 0xFF323C46U } }, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, width, 16, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::NewScene();
+	static std::vector<uint8_t> a, b;
+	a = Sprite();
+	b = Sprite();
+	hd::RegisterSpriteList(name + "\\A.CL2", 0, ClxSpriteList { a.data() });
+	hd::RegisterSpriteList(name + "\\B.CL2", 0, ClxSpriteList { b.data() });
+	ClxDraw(Surface(pal).subregionY(clipTop, 16 - clipTop), { 8, 11 - clipTop }, ClxSpriteList { a.data() }[0]);
+	if (after) after(pal, ClxSpriteList { b.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	if (palOut != nullptr)
+		*palOut = pal;
+	else
+		SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, BoxedArtIsDrawnWholeBeyondTheSprite)
+{
+	SDL_Surface *pal = nullptr;
+	SDL_Surface *frame = DrawBoxScenario("box", "-4 -8 12 14", true, 84, false, 0, {}, &pal);
+	ASSERT_NE(frame, nullptr);
+	// lo pixel (x, y) is the HD block at (2x, 2y)
+	ExpectColor(At(frame, 16, 16), CornerArt.r, CornerArt.g, CornerArt.b, "the sprite's top-left pixel shows its own part of the picture");
+	ExpectColor(At(frame, 18, 16), FrontArt.r, FrontArt.g, FrontArt.b, "the art inside the sprite");
+	ExpectColor(At(frame, 23, 23), FrontArt.r, FrontArt.g, FrontArt.b, "the art inside the sprite, its last pixel");
+	ExpectColor(At(frame, 18, 14), TipArt.r, TipArt.g, TipArt.b, "the tip right above the sprite");
+	ExpectColor(At(frame, 18, 0), TipArt.r, TipArt.g, TipArt.b, "the tip 8 pixels above the sprite");
+	ExpectColor(At(frame, 19, 1), TipArt.r, TipArt.g, TipArt.b, "the tip, its last pixel");
+	ExpectColor(At(frame, 20, 26), TipArt.r, TipArt.g, TipArt.b, "the foot below the sprite");
+	ExpectColor(At(frame, 8, 18), TipArt.r, TipArt.g, TipArt.b, "the pixel left of the sprite");
+	ExpectColor(At(frame, 16, 0), Background.r, Background.g, Background.b, "beside the tip, where the picture is clear");
+	ExpectColor(At(frame, 20, 14), Background.r, Background.g, Background.b, "above the sprite, where the picture is clear");
+	ExpectColor(At(frame, 6, 18), Background.r, Background.g, Background.b, "outside the box");
+	ExpectColor(At(frame, 32, 18), Background.r, Background.g, Background.b, "outside the box, right");
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[0 * pal->pitch + 9], Own) << "the extension takes the nearest pixel's index";
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[0 * pal->pitch + 8], BackgroundIndex) << "the PalSurface beside the tip is as the game drew it";
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, BoxedArtWithoutFreeSilhouetteStaysInsideTheFootprint)
+{
+	SDL_Surface *frame = DrawBoxScenario("boxbound", "-4 -8 12 14", false, 88);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 16, 16), CornerArt.r, CornerArt.g, CornerArt.b, "the picture sits where its box says");
+	ExpectColor(At(frame, 23, 23), FrontArt.r, FrontArt.g, FrontArt.b, "the art inside the sprite");
+	ExpectColor(At(frame, 18, 14), Background.r, Background.g, Background.b, "no tip outside the footprint");
+	ExpectColor(At(frame, 20, 26), Background.r, Background.g, Background.b, "no foot outside the footprint");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, BoxedArtGivesWayToLaterDrawsAndToTheSurfacesEdge)
+{
+	// After the sprite: a draw that doesn't know the HD layer changes lo pixel (9, 6), and a sprite with art covers lo pixels x 8..11, y 0..3
+	SDL_Surface *frame = DrawBoxScenario("boxlater", "-4 -8 12 14", true, 92, false, 0, [](SDL_Surface *s, ClxSprite other) {
+		static_cast<uint8_t *>(s->pixels)[6 * s->pitch + 9] = Unique;
+		ClxDraw(Surface(s), { 8, 3 }, other);
+	});
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color unique = Palette()[Unique];
+	ExpectColor(At(frame, 18, 12), unique.r, unique.g, unique.b, "a pixel drawn later without HD art covers the tip");
+	ExpectColor(At(frame, 18, 2), OtherArt.r, OtherArt.g, OtherArt.b, "a sprite drawn later covers the tip");
+	ExpectColor(At(frame, 18, 10), TipArt.r, TipArt.g, TipArt.b, "the tip between them");
+	SDL_FreeSurface(frame);
+	// Drawn into the rows from 4 down: the tip stops at the surface's edge
+	SDL_Surface *clipped = DrawBoxScenario("boxclip", "-4 -8 12 14", true, 96, false, 4);
+	ASSERT_NE(clipped, nullptr);
+	ExpectColor(At(clipped, 18, 6), Background.r, Background.g, Background.b, "no tip above the surface the sprite is drawn into");
+	ExpectColor(At(clipped, 18, 8), TipArt.r, TipArt.g, TipArt.b, "the tip from its first row");
+	ExpectColor(At(clipped, 16, 16), CornerArt.r, CornerArt.g, CornerArt.b, "the sprite");
+	SDL_FreeSurface(clipped);
+}
+
+TEST(HdTest, EffectLayerOfBoxedArtStaysRelativeToTheSprite)
+{
+	SDL_Surface *frame = DrawBoxScenario("boxfx", "-4 -8 12 14", true, 100, true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 12, 8), 10, 20, 30, "laid over at the layer's top-left, 2 left of and 4 above the sprite");
+	ExpectColor(At(frame, 24, 10), 150, 160, 170, "added right of the sprite");
+	ExpectColor(At(frame, 18, 0), TipArt.r, TipArt.g, TipArt.b, "the tip");
+	ExpectColor(At(frame, 16, 16), CornerArt.r, CornerArt.g, CornerArt.b, "the sprite");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, ABoxThatCantBeReadIsIgnored)
+{
+	// The picture is then taken to cover the sprite, as any art without a box: nothing is drawn beyond the sprite's rectangle
+	SDL_Surface *frame = DrawBoxScenario("boxbad", "-4 -8 0 14", true, 104);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 18, 14), Background.r, Background.g, Background.b, "nothing above the sprite");
+	ExpectColor(At(frame, 18, 0), Background.r, Background.g, Background.b, "nothing far above the sprite");
+	ExpectColor(At(frame, 8, 18), Background.r, Background.g, Background.b, "nothing left of the sprite");
+	SDL_FreeSurface(frame);
+}
+
 } // namespace
 } // namespace devilution

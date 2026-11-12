@@ -56,6 +56,9 @@ struct HdImage {
 	bool fxLooked = false;
 	int fxDx = 0; ///< an effect layer: where its rectangle (loW x loH original pixels) starts, relative to its sprite's top-left
 	int fxDy = 0;
+	bool boxed = false; ///< a sprite frame whose art covers more than the sprite ("hdbox"): loW x loH is then the art's rectangle
+	int boxDx = 0;      ///< where that rectangle starts, relative to the sprite's top-left
+	int boxDy = 0;
 };
 
 struct SpriteEntry {
@@ -217,6 +220,30 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 	return true;
 }
 
+std::string ReadPngText(const std::string &path, std::string_view keyword);
+
+/**
+ * A sprite frame's art may cover more than the sprite (a raised sword's tip above it, a foot below): its tEXt chunk "hdbox" =
+ * "<dx> <dy> <w> <h>" is then the rectangle the picture covers, in original pixels relative to the sprite's top-left.
+ */
+void ReadBox(const std::string &file, HdImage &img)
+{
+	const std::string text = ReadPngText(PackDir + "/" + file, "hdbox");
+	if (text.empty()) return;
+	constexpr int Most = 4096;
+	int dx = 0, dy = 0, w = 0, h = 0;
+	std::istringstream words(text);
+	if (!(words >> dx >> dy >> w >> h) || w <= 0 || h <= 0 || w > Most || h > Most || std::abs(dx) > Most || std::abs(dy) > Most) {
+		LogError("HD: {} doesn't say what it covers (tEXt hdbox \"{}\")", file, text);
+		return;
+	}
+	img.boxed = true;
+	img.boxDx = dx;
+	img.boxDy = dy;
+	img.loW = w;
+	img.loH = h;
+}
+
 uint32_t ImageId(const std::string &file, int loW, int loH)
 {
 	const std::lock_guard<std::mutex> lock(ImagesMutex);
@@ -229,6 +256,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 		if (LoadImage(file, entry->second, img)) {
 			img.loW = loW;
 			img.loH = loH;
+			if (file.compare(0, 7, "sprite/") == 0) ReadBox(file, img);
 			Images.push_back(std::move(img));
 			id = static_cast<uint32_t>(Images.size() - 1);
 			if (DumpIds) std::ofstream(DumpDir + "/ids.txt", std::ios::app) << id << ' ' << file << '\n';
@@ -318,13 +346,14 @@ struct FreeDraw {
 	uint32_t image = 0;
 	int left = 0, top = 0;
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-	bool whole = false; ///< no limit on how far from the sprite's own pixels its art is drawn (art with an effect layer)
+	bool whole = false; ///< no limit on how far from the sprite's own pixels its art is drawn (art with an effect layer, or a box of its own)
 };
 thread_local FreeDraw Free;
 
 /** The sprite draw in progress, when its art has an effect layer: End adds it to Overlays. */
 struct FxDraw {
 	uint32_t fx = 0;
+	int left = 0, top = 0;              ///< the sprite's top-left (its art's may be elsewhere: "hdbox")
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0; ///< the surface the sprite is drawn into
 };
 thread_local FxDraw Fx;
@@ -442,8 +471,8 @@ void ComputeReach(HdImage &img)
 }
 
 /**
- * ExtendFootprint for art with an effect layer (a spell cast): no limit on how far from the sprite's own pixels the art is drawn, since the
- * pose of a cast is not bound to the original's. Two passes over the art's rectangle give each pixel its nearest drawn pixel by chessboard
+ * ExtendFootprint for art with an effect layer (a spell cast) or a box of its own ("hdbox"): no limit on how far from the sprite's own pixels
+ * the art is drawn, since its pose is not bound to the original's. Two passes over the art's rectangle give each pixel its nearest drawn pixel by chessboard
  * distance (a near-black one counts as 3 further away, as below).
  */
 void ExtendWholeArt(const HdImage &img)
@@ -574,7 +603,7 @@ void ExtendFootprint()
 void AddOverlay()
 {
 	const HdImage &img = Images[Fx.fx];
-	Overlay o { Fx.fx, TrackLeft + img.fxDx, TrackTop + img.fxDy, 0, 0, 0, 0, TrackSerial, {} };
+	Overlay o { Fx.fx, Fx.left + img.fxDx, Fx.top + img.fxDy, 0, 0, 0, 0, TrackSerial, {} };
 	o.x0 = std::max(o.left, Fx.x0);
 	o.y0 = std::max(o.top, Fx.y0);
 	o.x1 = std::min(o.left + img.loW, Fx.x1);
@@ -1052,10 +1081,15 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 			}
 		}
 	}
-	Begin(out, image, out.region.x + position.x, out.region.y + position.y - clx.height() + 1, true);
+	const int left = out.region.x + position.x;
+	const int top = out.region.y + position.y - clx.height() + 1;
+	// Art with a box of its own covers that rectangle instead of the sprite's: its top-left is what the pixels record
+	const bool boxed = image != 0 && Images[image].boxed;
+	Begin(out, image, left + (boxed ? Images[image].boxDx : 0), top + (boxed ? Images[image].boxDy : 0), true);
 	if (image == 0 || out.surface != Target || TrackPlane != Plane.data() || TrackImage != image) return; // not tracked in the game's own surface
+	if (boxed) Free.whole = Free.on;
 	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
-		Fx = { fx, std::max(out.region.x, 0), std::max(out.region.y, 0), std::min(out.region.x + out.region.w, Target->w), std::min(out.region.y + out.region.h, Target->h) };
+		Fx = { fx, left, top, std::max(out.region.x, 0), std::max(out.region.y, 0), std::min(out.region.x + out.region.w, Target->w), std::min(out.region.y + out.region.h, Target->h) };
 		Free.whole = Free.on;
 	}
 }
