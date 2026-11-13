@@ -689,6 +689,76 @@ TEST(HdTest, EffectLayerWithoutItsPlaceIsIgnored)
 	fs::remove_all(pack);
 }
 
+TEST(HdTest, EffectLayerOfAPaletteSwapIsItsOwnWhenThePackHasOne)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_fxswap";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	std::array<SDL_Color, 256> colors = Palette();
+	colors[255] = { 255, 255, 255, 255 };
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		// a: a body and its swap, each with an effect layer; b: the same, but the swap has none; c: a body with a layer, drawn without its swap
+		for (const char *name : { "a", "b", "c" })
+			WriteArt(pack, std::string("sprite/fxswap/") + name + "/0.0.png", FrontArt, index);
+		WriteArt(pack, "sprite/fxswap/a@swap/0.0.png", OtherArt, index);
+		WriteArt(pack, "sprite/fxswap/b@swap/0.0.png", OtherArt, index);
+		const std::vector<std::array<uint32_t, 3>> body = { { 0, 0, 0xFF0A141EU } };
+		const std::vector<std::array<uint32_t, 3>> own = { { 0, 0, 0xFF8C1E1EU } };
+		WriteEffect(pack, "fx/fxswap/a/0.0.png", 8, 8, "-2 -4 8 8", body, index);
+		WriteEffect(pack, "fx/fxswap/a@swap/0.0.png", 8, 8, "-2 -4 8 8", own, index);
+		WriteEffect(pack, "fx/fxswap/b/0.0.png", 8, 8, "-2 -4 8 8", body, index);
+		WriteEffect(pack, "fx/fxswap/c/0.0.png", 8, 8, "-2 -4 8 8", body, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 16, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::NewScene();
+	const Surface out(pal);
+
+	std::array<uint8_t, 256> typeTrn;
+	for (int i = 0; i < 256; ++i)
+		typeTrn[i] = static_cast<uint8_t>(i);
+	typeTrn[Own] = Swapped;
+	std::vector<uint8_t> a = Sprite();
+	std::vector<uint8_t> b = Sprite();
+	std::vector<uint8_t> c = Sprite();
+	hd::RegisterSpriteList("FxSwap\\A.CL2", 0, ClxSpriteList { a.data() });
+	hd::RegisterSpriteList("FxSwap\\B.CL2", 0, ClxSpriteList { b.data() });
+	hd::RegisterSpriteList("FxSwap\\C.CL2", 0, ClxSpriteList { c.data() });
+	{
+		const hd::NamedRecolour swap("FxSwap\\Swap"); // as InitMonsterTRN applies a type's TRN
+		ClxApplyTrans(ClxSpriteList { a.data() }, typeTrn.data());
+		ClxApplyTrans(ClxSpriteList { b.data() }, typeTrn.data());
+	}
+	ClxDraw(out, { 8, 11 }, ClxSpriteList { a.data() }[0]);
+	ClxDraw(out, { 24, 11 }, ClxSpriteList { b.data() }[0]);
+	ClxDraw(out, { 40, 11 }, ClxSpriteList { c.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	ASSERT_NE(frame, nullptr);
+	// each layer's first pixel is laid over at lo pixel (x - 2, 4), the HD block at (2x - 4, 8)
+	ExpectColor(At(frame, 12, 8), 140, 30, 30, "a swap's own layer replaces the body's");
+	ExpectColor(At(frame, 44, 8), 10, 20, 30, "a swap without a layer of its own shows the body's");
+	ExpectColor(At(frame, 76, 8), 10, 20, 30, "a body drawn without its swap shows its own layer");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 /** A CLX list of one 16x4 sprite of which only the right column is drawn. */
 std::vector<uint8_t> ThinSprite()
 {
