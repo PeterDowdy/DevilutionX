@@ -117,6 +117,26 @@ enum class LightType : uint8_t {
 	PerPixel,
 };
 
+/** hd::Mark with the light level each pixel was lit with: the HD layer grades pillar art by light level. */
+template <LightType Light>
+DVL_ALWAYS_INLINE void HdMarkLit(const uint8_t *dst, const uint8_t *src, unsigned n, [[maybe_unused]] const uint8_t *tbl, [[maybe_unused]] const Lightmap *lightmap)
+{
+	if (hd::TrackPlane == nullptr) return;
+	if (hd::TrackShade != hd::ShadeByLevel) { // only a draw graded by light level needs it (and the lightmap lookup costs)
+		hd::Mark(dst, src, n);
+		return;
+	}
+	if constexpr (Light == LightType::FullyDark) {
+		hd::Mark(dst, src, n, static_cast<uint8_t>(LightsMax));
+	} else if constexpr (Light == LightType::FullyLit) {
+		hd::Mark(dst, src, n, 0);
+	} else if constexpr (Light == LightType::PartiallyLit) {
+		hd::Mark(dst, src, n, hd::LightLevelOf(tbl));
+	} else {
+		hd::MarkLights(dst, src, n, lightmap->getLightingAt(dst));
+	}
+}
+
 template <LightType Light>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, const Lightmap *lightmap);
 
@@ -124,7 +144,7 @@ template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::FullyDark>(uint8_t *DVL_RESTRICT dst, [[maybe_unused]] const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	FillBytesUpTo32(dst, n, 0);
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::FullyDark>(dst, src, n, tbl, lightmap);
 }
 
 template <>
@@ -135,7 +155,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::FullyLit>(u
 #else
 	BlitFillDirect(dst, n, DBGCOLOR);
 #endif
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::FullyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
@@ -146,7 +166,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::PartiallyLi
 #else
 	BlitFillDirect(dst, n, tbl[DBGCOLOR]);
 #endif
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::PartiallyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
@@ -157,7 +177,7 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque<LightType::PerPixel>(u
 #else
 	BlitFillWithLightmap(dst, n, DBGCOLOR, *lightmap);
 #endif
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::PerPixel>(dst, src, n, tbl, lightmap);
 }
 
 #ifndef DEBUG_RENDER_COLOR
@@ -168,28 +188,28 @@ template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyDark>(uint8_t *DVL_RESTRICT dst, [[maybe_unused]] const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitFillBlended(dst, n, 0);
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::FullyDark>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitPixelsBlended(dst, src, n);
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::FullyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PartiallyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
 	BlitPixelsBlendedWithMap(dst, src, n, tbl);
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::PartiallyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PerPixel>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, const Lightmap *lightmap)
 {
 	BlitPixelsBlendedWithLightmap(dst, src, n, *lightmap);
-	hd::Mark(dst, src, n);
+	HdMarkLit<LightType::PerPixel>(dst, src, n, tbl, lightmap);
 }
 #else // DEBUG_RENDER_COLOR
 template <LightType Light>
@@ -218,10 +238,10 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparentOrOpaqueN(uint8_t 
 {
 	if constexpr (!Transparent && Light == LightType::FullyDark) {
 		BlitFillDirect(dst, N, 0);
-		hd::Mark(dst, src, N);
+		HdMarkLit<LightType::FullyDark>(dst, src, N, tbl, lightmap);
 	} else if constexpr (!Transparent && Light == LightType::FullyLit) {
 		BlitPixelsDirect(dst, src, N);
-		hd::Mark(dst, src, N);
+		HdMarkLit<LightType::FullyLit>(dst, src, N, tbl, lightmap);
 	} else {
 		RenderLineTransparentOrOpaque<Light, Transparent>(dst, src, N, tbl, lightmap);
 	}

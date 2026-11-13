@@ -16,10 +16,15 @@
  * Shading: the grade is never taken pixel by pixel from the original (a light table darkens each palette ramp by a different share, and a
  * recolour moves some indices and not others, so a per-pixel ratio stamps the 1997 picture into art drawn anew). Instead:
  *   - a sprite drawn through one light table (or none) - monsters, players, items, missiles, objects, the panels - takes one grade per
- *     draw: the sum of live[written] over the sum of reference[source] over all the pixels it drew that are still on screen, per channel;
+ *     draw, made from all the pixels it drew that are still on screen: per channel, the line through their (reference[source],
+ *     live[written]) pairs above black, applied to the art and clamped at black. A light table steps each colour down its ramp, which takes
+ *     about the same brightness off every colour and stops at black, so dim light crushes the shadows as it does in the original (a plain
+ *     ratio would keep them in proportion); with too few pairs for a line, the sums' ratio;
  *   - a sprite drawn through a recolour (a TRN that is not a light table, or a type's TRN its art is graded through), blended, or lit by
- *     the per-pixel lightmap, and every pillar, takes that sum over the pixels of the same draw within 2 original pixels (hd.cpp
- *     LocalRadius), so the light gradient and the recolour's regions carry over without the original's pixel pattern;
+ *     the per-pixel lightmap takes that grade over the pixels of the same draw within 2 original pixels (hd.cpp LocalRadius), so the
+ *     recolour's regions carry over without the original's pixel pattern;
+ *   - pillars, which the game lights piece by piece or pixel by pixel, take the grade of their light level, over all the pillar pixels of
+ *     the frame lit at that level (and drawn with the same reference palette);
  *   - a sum lit to black grades to black (the per-pixel grade read a factor of 0 as "add the offset", so art lit to black kept most of
  *     its colour);
  *   - "shading pixel" in hd.txt keeps the old per-pixel grade everywhere.
@@ -88,7 +93,9 @@ struct PixelProvenance {
 	uint8_t written; ///< the index written to the PalSurface
 	uint8_t free : 2;  ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp); 2 = added outside the sprite's footprint
 	uint8_t under : 1; ///< drawn as foliage (TrackUnder): ground cover, which effect layers stay on top of
-	uint8_t shade : 2; ///< how the art is graded (see the top of this file): 0 per draw, 1 over the pixels of its draw nearby, 2 per pixel
+	uint8_t shade : 2; ///< how the art is graded (see the top of this file): 0 per draw, 1 over the pixels of its draw nearby, 2 per pixel,
+	                   ///< 3 by light level (pillars)
+	uint8_t light : 4; ///< the light level the game lit the pixel with (0 full light .. 15 dark), where the draw knows it (pillars)
 	uint32_t serial;   ///< which draw wrote the pixel
 };
 
@@ -112,9 +119,11 @@ extern thread_local uint32_t TrackSerial;
 extern thread_local uint8_t TrackUnder;
 /** How the draw in progress is graded (PixelProvenance::shade). */
 extern thread_local uint8_t TrackShade;
+/** PixelProvenance::shade of a draw graded by light level: it alone needs each pixel's light level (MarkLights, LightLevelOf). */
+constexpr uint8_t ShadeByLevel = 3;
 
-/** Record ``n`` pixels just written at ``dst`` from the art indices ``src``. */
-inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
+/** Record ``n`` pixels just written at ``dst`` from the art indices ``src``, lit with the light level ``light`` (0 when not known). */
+inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n, uint8_t light = 0)
 {
 	if (TrackPlane == nullptr) return;
 	PixelProvenance *p = TrackPlane + (dst - TrackBase);
@@ -123,9 +132,26 @@ inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, light, TrackSerial };
 	}
 }
+
+/** Mark, each pixel lit with its own light level from ``lights`` (the per-pixel lightmap). */
+inline void MarkLights(const uint8_t *dst, const uint8_t *src, unsigned n, const uint8_t *lights)
+{
+	if (TrackPlane == nullptr) return;
+	PixelProvenance *p = TrackPlane + (dst - TrackBase);
+	for (unsigned i = 0; i < n; ++i) {
+		if (TrackUnder != 0 && p[i].free == 2) {
+			const_cast<uint8_t *>(dst)[i] = p[i].written;
+			continue;
+		}
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, static_cast<uint8_t>(lights[i] & 15), TrackSerial };
+	}
+}
+
+/** The light level of ``table`` among the game's light tables (SetLightTables), 0 for any other. */
+uint8_t LightLevelOf(const uint8_t *table);
 
 /** Record ``n`` pixels just written at ``dst`` from one art index. */
 inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
@@ -137,7 +163,7 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackShade, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackShade, 0, TrackSerial };
 	}
 }
 
