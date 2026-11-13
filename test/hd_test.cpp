@@ -1,6 +1,8 @@
 #include "engine/render/hd.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -985,6 +987,8 @@ TEST(HdTest, ABoxThatCantBeReadIsIgnored)
 constexpr uint8_t Other = 40;
 constexpr uint8_t OwnLit = 50;
 constexpr uint8_t OtherLit = 60;
+constexpr uint8_t OwnDim = 70;
+constexpr uint8_t OtherDim = 80;
 constexpr uint8_t Black = 0;
 
 std::array<SDL_Color, 256> ShadingPalette()
@@ -994,6 +998,8 @@ std::array<SDL_Color, 256> ShadingPalette()
 	colors[Other] = { 100, 150, 100, 255 };
 	colors[OwnLit] = { 100, 25, 25, 255 };    // Own at half light
 	colors[OtherLit] = { 25, 37, 25, 255 };   // Other at a quarter
+	colors[OwnDim] = { 160, 10, 10, 255 };    // Own and Other 40 darker, as a light table steps a colour down its ramp
+	colors[OtherDim] = { 60, 110, 60, 255 };
 	return colors;
 }
 
@@ -1026,12 +1032,13 @@ SDL_Surface *DrawShadingScenario(const std::string &name, const std::string &ext
 			pal << c.r << c.g << c.b;
 		std::ofstream index(pack / "hd.txt");
 		index << "scale 2\n" << extra;
-		fs::create_directories(pack / "sprite" / name / "two");
+		// A monster's art: the game world's (the panels' recoloured art keeps the per-pixel grade)
+		fs::create_directories(pack / "sprite/monsters" / name / "two");
 		SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 16, 8, 32, SDL_PIXELFORMAT_ARGB8888);
 		SDL_FillRect(s, nullptr, SDL_MapRGBA(s->format, FrontArt.r, FrontArt.g, FrontArt.b, 255));
-		IMG_SavePNG(s, (pack / "sprite" / name / "two/0.0.png").string().c_str());
+		IMG_SavePNG(s, (pack / "sprite/monsters" / name / "two/0.0.png").string().c_str());
 		SDL_FreeSurface(s);
-		index << "image sprite/" << name << "/two/0.0.png palettes/test.pal\n";
+		index << "image sprite/monsters/" << name << "/two/0.0.png palettes/test.pal\n";
 	}
 	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
 	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
@@ -1049,7 +1056,7 @@ SDL_Surface *DrawShadingScenario(const std::string &name, const std::string &ext
 	const Surface out(pal);
 	static std::vector<uint8_t> two;
 	two = TwoToneSprite();
-	hd::RegisterSpriteList(name + "\\Two.CL2", 0, ClxSpriteList { two.data() });
+	hd::RegisterSpriteList("Monsters\\" + name + "\\Two.CL2", 0, ClxSpriteList { two.data() });
 	if (trn != nullptr)
 		ClxDrawTRN(out, { 4, 4 }, ClxSpriteList { two.data() }[0], trn);
 	else
@@ -1071,11 +1078,13 @@ std::array<uint8_t, 256> Identity()
 	return t;
 }
 
-/** Each channel of ``art`` times the sum of ``live`` over the sum of ``ref`` (both halves of the sprite alike), as the layer rounds it. */
-int SumGraded(int art, int liveA, int liveB, int refA, int refB)
+/** A channel of ``art`` through the line from (``refA``, ``liveA``) to (``refB``, ``liveB``) (the sprite's two colours), as the layer rounds it. */
+int LineGraded(int art, int liveA, int liveB, int refA, int refB)
 {
-	const uint64_t live = 16U * liveA + 16U * liveB, ref = 16U * refA + 16U * refB;
-	return static_cast<int>((art * (((live << 16) + ref - 1) / ref)) >> 16);
+	const double scale = static_cast<double>(liveB - liveA) / (refB - refA);
+	const double shift = liveA - scale * refA;
+	const int64_t v = ((static_cast<int64_t>(art) * std::lround(scale * 65536)) >> 16) + std::lround(shift);
+	return static_cast<int>(std::clamp<int64_t>(v, 0, 255));
 }
 
 TEST(HdTest, ALitSpriteIsShadedAsAWholeNotPixelByPixel)
@@ -1088,8 +1097,21 @@ TEST(HdTest, ALitSpriteIsShadedAsAWholeNotPixelByPixel)
 	ASSERT_NE(frame, nullptr);
 	const SDL_Color left = At(frame, 9, 4), right = At(frame, 22, 4);
 	ExpectColor(right, left.r, left.g, left.b, "both halves alike");
-	ExpectColor(left, SumGraded(FrontArt.r, 100, 25, 200, 100), SumGraded(FrontArt.g, 25, 37, 50, 150), SumGraded(FrontArt.b, 25, 25, 50, 100),
-	    "the sprite's live colours over its reference colours");
+	ExpectColor(left, LineGraded(FrontArt.r, 100, 25, 200, 100), LineGraded(FrontArt.g, 25, 37, 50, 150), LineGraded(FrontArt.b, 25, 25, 50, 100),
+	    "the line through the sprite's (reference, live) colours");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, DimLightTakesTheSameBrightnessOffEveryColour)
+{
+	// A light table that steps both colours 40 down: the art loses 40 too (a ratio would take less off its dark channels, 0.73 x 60 = 44)
+	std::array<uint8_t, 256> dim = Identity();
+	dim[Own] = OwnDim;
+	dim[Other] = OtherDim;
+	SDL_Surface *frame = DrawShadingScenario("shadedim", "", dim.data(), true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), FrontArt.r - 40, FrontArt.g - 40, FrontArt.b - 40, "40 darker");
+	ExpectColor(At(frame, 22, 4), FrontArt.r - 40, FrontArt.g - 40, FrontArt.b - 40, "40 darker, both halves alike");
 	SDL_FreeSurface(frame);
 }
 
