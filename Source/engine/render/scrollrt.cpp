@@ -1248,6 +1248,8 @@ void DrawGame(const Surface &fullOut, Point position, Displacement offset)
 
 	UpdateMissilesRendererData();
 	hd::NewScene();
+	hd::ForgetView(fullOut.subregionY(0, gnViewportHeight)); // the whole view, also when zoom draws half of it and doubles that
+	hd::SetLightTables(LightTables[0].data(), sizeof(LightTables));
 
 	// Draw areas moving in and out of the screen
 	if (MyPlayer->isWalking()) {

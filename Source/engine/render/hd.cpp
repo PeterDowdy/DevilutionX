@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <barrier>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
@@ -34,6 +35,7 @@ thread_local int16_t TrackTop = 0;
 thread_local uint8_t TrackFree = 0;
 thread_local uint32_t TrackSerial = 0;
 thread_local uint8_t TrackUnder = 0;
+thread_local uint8_t TrackShade = 0;
 
 namespace {
 
@@ -98,6 +100,18 @@ std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
 
+/** "shading pixel" in hd.txt: every pixel graded on its own, as before the shading was reworked (see the top of hd.hpp). */
+bool PixelShading = false;
+/** PixelProvenance::shade */
+constexpr uint8_t ShadeDraw = 0;
+constexpr uint8_t ShadeLocal = 1;
+constexpr uint8_t ShadePixel = 2;
+/** How far a local grade looks for pixels of the same draw, in original pixels each way. */
+constexpr int LocalRadius = 2;
+/** SetLightTables */
+const uint8_t *LightTablesBegin = nullptr;
+const uint8_t *LightTablesEnd = nullptr;
+
 SDL_Surface *Target = nullptr; ///< the PalSurface
 std::vector<PixelProvenance> Plane;
 int PlanePitch = 0;
@@ -111,6 +125,16 @@ bool FreeSilhouette = false;
 std::vector<PixelProvenance> BehindProv;
 std::vector<uint8_t> BehindIdx;
 uint32_t NextSerial = 0;
+
+/** ForgetView: the game view's rectangle, and the last draw before it was drawn anew. */
+int ViewX0 = 0, ViewY0 = 0, ViewX1 = 0, ViewY1 = 0;
+uint32_t SceneSerial = 0;
+
+/** Whether ``p``, at (``x``, ``y``) of the PalSurface, was drawn before the game view it is in was drawn anew (ForgetView). */
+bool Stale(const PixelProvenance &p, int x, int y)
+{
+	return x >= ViewX0 && x < ViewX1 && y >= ViewY0 && y < ViewY1 && static_cast<int32_t>(p.serial - SceneSerial) <= 0;
+}
 
 /** The effect layer of a sprite drawn into the game view since NewScene: composed over the frame (ComposeOverlays). */
 struct Overlay {
@@ -344,6 +368,7 @@ struct SavedTrack {
 	uint32_t image;
 	int16_t left, top;
 	uint8_t free;
+	uint8_t shade;
 	uint32_t serial;
 };
 thread_local SavedTrack Saved;
@@ -405,6 +430,7 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 				continue;
 			}
 			PixelProvenance p = self ? row[x] : off->plane[static_cast<size_t>(fy) * srcPitch + sx + x];
+			if (self && Stale(p, sx + x, fy)) p = {};
 			if (p.image != 0) {
 				p.left = static_cast<int16_t>(p.left + dx - sx);
 				p.top = static_cast<int16_t>(p.top + dy - sy);
@@ -417,7 +443,8 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 
 void Begin(const Surface &out, uint32_t image, int left, int top, bool free = false)
 {
-	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackSerial };
+	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackShade, TrackSerial };
+	TrackShade = PixelShading ? ShadePixel : ShadeDraw;
 	Free.on = false;
 	Fx.fx = 0;
 	if (!Active) return;
@@ -544,7 +571,7 @@ void ExtendWholeArt(const HdImage &img)
 	auto *pixels = static_cast<uint8_t *>(Target->pixels);
 	for (const Extension &e : extend) {
 		pixels[e.at] = e.donor.written;
-		Plane[e.at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), e.donor.source, e.donor.written, 2, 0, TrackSerial };
+		Plane[e.at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), e.donor.source, e.donor.written, 2, 0, TrackShade, TrackSerial };
 	}
 }
 
@@ -603,7 +630,7 @@ void ExtendFootprint()
 		donors.push_back(*e.donor);
 	for (size_t i = 0; i < extend.size(); ++i) {
 		pixels[extend[i].at] = donors[i].written;
-		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, 0, TrackSerial };
+		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, 0, TrackShade, TrackSerial };
 	}
 }
 
@@ -646,6 +673,7 @@ void End()
 	TrackLeft = Saved.left;
 	TrackTop = Saved.top;
 	TrackFree = Saved.free;
+	TrackShade = Saved.shade;
 	TrackSerial = Saved.serial;
 }
 
@@ -654,21 +682,191 @@ void End()
  * so that ref itself maps exactly to live), or plus live - ref when ref is too dark for a ratio.
  */
 struct ChannelGrade {
-	int32_t factor; ///< 0: use the offset
-	int32_t offset;
+	int32_t factor = 1 << 16;
+	int32_t offset = 0;
+	bool byOffset = false; ///< add the offset instead of the factor (the reference is too dark for a ratio)
 
+	ChannelGrade() = default;
+
+	/**
+	 * The per-pixel grade of "shading pixel", exactly as it always was. Its factor 0 meant "use the offset", so a pixel lit to black
+	 * (live 0) took the offset -ref instead: dark monsters kept most of their art.
+	 */
 	ChannelGrade(uint8_t ref, uint8_t live)
 	    : factor(ref >= 16 ? static_cast<int32_t>(((live << 16) + ref - 1) / ref) : 0)
 	    , offset(live - ref)
+	    , byOffset(factor == 0)
 	{
+	}
+
+	/**
+	 * Over ``n`` pixels: the sum of their live colours over the sum of their reference colours (rounded up, so that the reference maps exactly
+	 * to live), or the mean offset when the references are too dark for a ratio. A sum lit to black grades to black.
+	 */
+	static ChannelGrade OfSums(uint64_t ref, uint64_t live, uint32_t n)
+	{
+		ChannelGrade g;
+		g.byOffset = ref < 16U * n;
+		if (g.byOffset)
+			g.offset = static_cast<int32_t>((static_cast<int64_t>(live) - static_cast<int64_t>(ref)) / static_cast<int64_t>(n));
+		else
+			g.factor = static_cast<int32_t>(std::min<uint64_t>(((live << 16) + ref - 1) / ref, INT32_MAX));
+		return g;
 	}
 
 	[[nodiscard]] uint32_t apply(uint32_t c) const
 	{
-		const int32_t v = factor != 0 ? static_cast<int32_t>((c * factor) >> 16) : static_cast<int32_t>(c) + offset;
+		const int32_t v = byOffset ? static_cast<int32_t>(c) + offset : static_cast<int32_t>((static_cast<uint64_t>(c) * factor) >> 16);
 		return static_cast<uint32_t>(std::clamp(v, 0, 255));
 	}
 };
+
+/** How an HD pixel's three channels follow the game's picture. */
+struct Grade {
+	ChannelGrade r, g, b;
+};
+
+/** Sums of live and reference colours over pixels of one draw (see the top of hd.hpp). */
+struct GradeSums {
+	uint64_t live[3] {};
+	uint64_t ref[3] {};
+	uint32_t n = 0;
+
+	void Add(SDL_Color c, const uint8_t *ref3)
+	{
+		live[0] += c.r;
+		live[1] += c.g;
+		live[2] += c.b;
+		ref[0] += ref3[0];
+		ref[1] += ref3[1];
+		ref[2] += ref3[2];
+		++n;
+	}
+
+	[[nodiscard]] Grade ToGrade() const
+	{
+		return { ChannelGrade::OfSums(ref[0], live[0], n), ChannelGrade::OfSums(ref[1], live[1], n), ChannelGrade::OfSums(ref[2], live[2], n) };
+	}
+};
+
+/** The grade of each draw graded as a whole (shade 0), by its serial: made by PrepareGrades before the frame is composed. */
+std::unordered_map<uint32_t, Grade> DrawGrades;
+
+/** Whether ``p`` still holds what its draw wrote (``index``: the pixel's index now), with art that is graded. */
+bool Graded(const PixelProvenance &p, uint8_t index)
+{
+	return p.image != 0 && p.written == index && Images[p.image].w != 0 && Images[p.image].hasRef;
+}
+
+/** PrepareGrades over the rows ``y0`` to ``y1``: the sums of each draw graded as a whole. */
+/**
+ * Before the rows ``y0`` to ``y1`` are composed: clears the pixels drawn before the game view was drawn anew (Stale), and, unless ``sums`` is
+ * null, sums each draw graded as a whole (PrepareGrades).
+ */
+void PrepareRows(SDL_Surface *pal, int y0, int y1, std::unordered_map<uint32_t, GradeSums> *sums)
+{
+	for (int y = std::max(y0, ViewY0); y < std::min(y1, ViewY1); ++y) {
+		for (int x = ViewX0; x < ViewX1; ++x) {
+			PixelProvenance &p = Plane[static_cast<size_t>(y) * PlanePitch + x];
+			if (p.image != 0 && Stale(p, x, y)) p = {};
+		}
+	}
+	if (sums == nullptr) return;
+	const SDL_Color *live = pal->format->palette->colors;
+	const auto *pixels = static_cast<const uint8_t *>(pal->pixels);
+	const bool haveBehind = BehindProv.size() == Plane.size();
+	uint32_t lastSerial = 0;
+	GradeSums *last = nullptr;
+	const auto add = [&](const PixelProvenance &p, uint8_t index) {
+		if (p.shade != ShadeDraw || p.free == 2 || !Graded(p, index)) return;
+		if (last == nullptr || p.serial != lastSerial) {
+			last = &(*sums)[p.serial];
+			lastSerial = p.serial;
+		}
+		last->Add(live[index], &Images[p.image].ref[p.source * 3]);
+	};
+	for (int y = y0; y < y1; ++y) {
+		for (int x = 0; x < pal->w; ++x) {
+			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
+			if (Plane[at].image == 0) continue;
+			add(Plane[at], pixels[at]);
+			if (haveBehind && Plane[at].free != 0 && !Stale(BehindProv[at], x, y)) add(BehindProv[at], BehindIdx[at]);
+		}
+	}
+}
+
+/**
+ * Every draw graded as a whole: the sums of its pixels still on screen (and of those kept behind free silhouettes), the pixels its art
+ * added outside its footprint left out, as they repeat others; ``sums`` holds them by bands of rows (PrepareRows).
+ */
+void PrepareGrades(std::vector<std::unordered_map<uint32_t, GradeSums>> &sums)
+{
+	for (size_t t = 1; t < sums.size(); ++t) {
+		for (const auto &[serial, s] : sums[t]) {
+			GradeSums &into = sums[0][serial];
+			for (int k = 0; k < 3; ++k) {
+				into.live[k] += s.live[k];
+				into.ref[k] += s.ref[k];
+			}
+			into.n += s.n;
+		}
+	}
+	DrawGrades.reserve(sums[0].size());
+	for (const auto &[serial, s] : sums[0])
+		DrawGrades.emplace(serial, s.ToGrade());
+}
+
+/** A local grade (shade 1): the sums over the pixels of the same draw within LocalRadius of (``x``, ``y``). False when there are none. */
+bool LocalGrade(const PixelProvenance *plane, const uint8_t *idx, int pitch, int w, int h, int x, int y, uint32_t serial, const SDL_Color *live, Grade &out)
+{
+	GradeSums s;
+	for (int qy = std::max(0, y - LocalRadius); qy <= std::min(h - 1, y + LocalRadius); ++qy) {
+		for (int qx = std::max(0, x - LocalRadius); qx <= std::min(w - 1, x + LocalRadius); ++qx) {
+			const size_t at = static_cast<size_t>(qy) * pitch + qx;
+			const PixelProvenance &q = plane[at];
+			if (q.serial != serial || !Graded(q, idx[at])) continue;
+			s.Add(live[idx[at]], &Images[q.image].ref[q.source * 3]);
+		}
+	}
+	if (s.n == 0) return false;
+	out = s.ToGrade();
+	return true;
+}
+
+/** The last draw whose grade GradeOf looked up. */
+struct GradeCache {
+	uint32_t serial = 0;
+	const Grade *grade = nullptr;
+};
+
+/**
+ * The grade of the pixel ``p`` at (``x``, ``y``) of ``plane`` (its indices ``idx``, ``pitch`` apart, ``w`` x ``h``), as its shade says; null
+ * for art without a reference palette (drawn as it is). ``scratch`` holds a grade made for this pixel, ``cache`` the last draw's.
+ */
+const Grade *GradeOf(const PixelProvenance &p, const PixelProvenance *plane, const uint8_t *idx, int pitch, int w, int h, int x, int y,
+    const SDL_Color *live, Grade &scratch, GradeCache &cache)
+{
+	const HdImage &img = Images[p.image];
+	if (!img.hasRef) return nullptr;
+	const uint8_t index = idx[static_cast<size_t>(y) * pitch + x];
+	if (p.shade == ShadeDraw) {
+		if (cache.grade != nullptr && cache.serial == p.serial) return cache.grade;
+		const auto found = DrawGrades.find(p.serial);
+		if (found != DrawGrades.end()) {
+			cache = { p.serial, &found->second };
+			return cache.grade;
+		}
+	} else if (p.shade == ShadeLocal && LocalGrade(plane, idx, pitch, w, h, x, y, p.serial, live, scratch)) {
+		return &scratch;
+	}
+	const uint8_t *ref = &img.ref[p.source * 3];
+	const SDL_Color c = live[index];
+	if (p.shade == ShadePixel)
+		scratch = { ChannelGrade(ref[0], c.r), ChannelGrade(ref[1], c.g), ChannelGrade(ref[2], c.b) };
+	else // a draw with no grade of its own here (none of its pixels is left to sum): this pixel alone
+		scratch = { ChannelGrade::OfSums(ref[0], c.r, 1), ChannelGrade::OfSums(ref[1], c.g, 1), ChannelGrade::OfSums(ref[2], c.b, 1) };
+	return &scratch;
+}
 
 void FillBlock(uint32_t *dst, int outW, int n, uint32_t color)
 {
@@ -678,20 +876,15 @@ void FillBlock(uint32_t *dst, int outW, int n, uint32_t color)
 
 /**
  * Draws the HD block of the pixel (``x``, ``y``), live colour ``c``, from ``img`` into ``dst`` (n rows of n, ``outW`` apart), graded
- * by the live colour. Where the art is not opaque it blends over ``under`` (n x n, packed) or, without it, over ``c``.
+ * by ``grade`` (GradeOf; null: as it is). Where the art is not opaque it blends over ``under`` (n x n, packed) or, without it, over ``c``.
  * False when the pixel is outside the art.
  */
-bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL_Color c, uint32_t *dst, int outW, const uint32_t *under)
+bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL_Color c, const Grade *grade, uint32_t *dst, int outW, const uint32_t *under)
 {
 	const int n = Scale;
 	const int sx = x - p.left;
 	const int sy = y - p.top;
 	if (sx < 0 || sy < 0 || sx >= img.loW || sy >= img.loH) return false;
-	const bool graded = img.hasRef;
-	const uint8_t *ref = &img.ref[p.source * 3];
-	const ChannelGrade gr = graded ? ChannelGrade(ref[0], c.r) : ChannelGrade(0, 0);
-	const ChannelGrade gg = graded ? ChannelGrade(ref[1], c.g) : ChannelGrade(0, 0);
-	const ChannelGrade gb = graded ? ChannelGrade(ref[2], c.b) : ChannelGrade(0, 0);
 	int us[8];
 	for (int i = 0; i < n; ++i)
 		us[i] = std::min(img.w - 1, (sx * n + i) * img.w / (img.loW * n));
@@ -703,10 +896,10 @@ bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL
 			const uint32_t s = row[us[i]];
 			const uint32_t a = s >> 24;
 			uint32_t r = (s >> 16) & 0xFF, g = (s >> 8) & 0xFF, b = s & 0xFF;
-			if (graded) {
-				r = gr.apply(r);
-				g = gg.apply(g);
-				b = gb.apply(b);
+			if (grade != nullptr) {
+				r = grade->r.apply(r);
+				g = grade->g.apply(g);
+				b = grade->b.apply(b);
 			}
 			if (a < 255) {
 				uint32_t br = c.r, bg = c.g, bb = c.b;
@@ -735,6 +928,8 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 	const auto *pixels = static_cast<const uint8_t *>(pal->pixels);
 	const bool havePlane = PlanePitch == pal->pitch && PlaneHeight == pal->h;
 	const bool haveBehind = havePlane && BehindProv.size() == Plane.size();
+	Grade scratch, behindScratch;
+	GradeCache cache, behindCache;
 	for (int y = y0; y < y1; ++y) {
 		for (int x = 0; x < w; ++x) {
 			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
@@ -742,7 +937,7 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 			const SDL_Color c = live[index];
 			const uint32_t flat = 0xFF000000U | (c.r << 16) | (c.g << 8) | c.b;
 			uint32_t *dst = &Frame[static_cast<size_t>(y) * n * outW + static_cast<size_t>(x) * n];
-			const PixelProvenance *p = havePlane ? &Plane[at] : nullptr;
+			const PixelProvenance *p = havePlane ? &Plane[at] : nullptr; // (PrepareRows cleared the pixels drawn before the view was drawn anew)
 			const HdImage *img = p != nullptr && p->image != 0 && p->written == index ? &Images[p->image] : nullptr;
 			if (img == nullptr || img->w == 0) {
 				FillBlock(dst, outW, n, flat);
@@ -754,13 +949,16 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 				const uint8_t behind = BehindIdx[at];
 				const SDL_Color bc = live[behind];
 				const PixelProvenance &bp = BehindProv[at];
-				const HdImage *behindImg = bp.image != 0 && bp.written == behind ? &Images[bp.image] : nullptr;
-				if (behindImg == nullptr || behindImg->w == 0 || !SampleBlock(*behindImg, bp, x, y, bc, under, n, nullptr))
+				const HdImage *behindImg = bp.image != 0 && bp.written == behind && !Stale(bp, x, y) ? &Images[bp.image] : nullptr;
+				if (behindImg == nullptr || behindImg->w == 0
+				    || !SampleBlock(*behindImg, bp, x, y, bc, GradeOf(bp, BehindProv.data(), BehindIdx.data(), pal->pitch, w, pal->h, x, y, live, behindScratch, behindCache), under, n, nullptr))
 					FillBlock(under, n, n, 0xFF000000U | (bc.r << 16) | (bc.g << 8) | bc.b);
-				if (!SampleBlock(*img, *p, x, y, c, dst, outW, under)) FillBlock(dst, outW, n, flat);
+				if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, under))
+					FillBlock(dst, outW, n, flat);
 				continue;
 			}
-			if (!SampleBlock(*img, *p, x, y, c, dst, outW, nullptr)) FillBlock(dst, outW, n, flat);
+			if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, nullptr))
+				FillBlock(dst, outW, n, flat);
 		}
 	}
 }
@@ -832,13 +1030,27 @@ void Compose(SDL_Surface *pal)
 {
 	Frame.resize(static_cast<size_t>(pal->w) * Scale * pal->h * Scale);
 	const int threads = static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1U, 8U));
-	std::vector<std::thread> workers;
 	const int rows = (pal->h + threads - 1) / threads;
-	for (int t = 1; t < threads; ++t) {
+	const bool havePlane = PlanePitch == pal->pitch && PlaneHeight == pal->h;
+	const bool grading = havePlane && !PixelShading;
+	DrawGrades.clear();
+	std::vector<std::unordered_map<uint32_t, GradeSums>> sums(grading ? threads : 0);
+	// Each thread prepares its band of rows (PrepareRows), then one merges the draws' sums, then each composes its band: no thread composes
+	// before every band is prepared, as a local grade reads the rows next to its own
+	std::barrier prepared(threads, [&sums]() noexcept {
+		if (!sums.empty()) PrepareGrades(sums);
+	});
+	const auto work = [&](int t) {
 		const int y0 = t * rows;
-		if (y0 < pal->h) workers.emplace_back(ComposeRows, pal, y0, std::min(pal->h, y0 + rows));
-	}
-	ComposeRows(pal, 0, std::min(pal->h, rows));
+		const int y1 = std::min(pal->h, y0 + rows);
+		if (havePlane && y0 < y1) PrepareRows(pal, y0, y1, grading ? &sums[t] : nullptr);
+		prepared.arrive_and_wait();
+		if (y0 < y1) ComposeRows(pal, y0, y1);
+	};
+	std::vector<std::thread> workers;
+	for (int t = 1; t < threads; ++t)
+		workers.emplace_back(work, t);
+	work(0);
 	for (std::thread &w : workers)
 		w.join();
 	if (!Overlays.empty()) ComposeOverlays(pal);
@@ -860,7 +1072,7 @@ void WriteDump(SDL_Surface *pal, const std::string &name)
 			for (int x = 0; x < pal->w; ++x) {
 				const PixelProvenance &p = Plane[static_cast<size_t>(y) * pal->pitch + x];
 				// A = the art's source index, RGB = the image id (0 when the pixel no longer holds what it wrote)
-				ids[static_cast<size_t>(y) * pal->w + x] = (static_cast<uint32_t>(p.source) << 24) | (p.written == pixels[static_cast<size_t>(y) * pal->pitch + x] ? p.image : 0);
+				ids[static_cast<size_t>(y) * pal->w + x] = (static_cast<uint32_t>(p.source) << 24) | (p.written == pixels[static_cast<size_t>(y) * pal->pitch + x] && !Stale(p, x, y) ? p.image : 0);
 			}
 		SDL_Surface *idSurface = SDL_CreateRGBSurfaceWithFormatFrom(ids.data(), pal->w, pal->h, 32, pal->w * 4, SDL_PIXELFORMAT_ARGB8888);
 		if (idSurface != nullptr) {
@@ -920,6 +1132,7 @@ void Init()
 	}
 	std::string line;
 	FreeSilhouette = false;
+	PixelShading = false;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
 		std::string kind;
@@ -930,6 +1143,10 @@ void Init()
 			std::string mode;
 			words >> mode;
 			FreeSilhouette = mode == "free";
+		} else if (kind == "shading") {
+			std::string mode;
+			words >> mode;
+			PixelShading = mode == "pixel";
 		} else if (kind == "image") {
 			std::string file, palette;
 			words >> file >> palette;
@@ -956,7 +1173,7 @@ void Init()
 	}
 	Active = true;
 	SurfaceBlitHook = &CopyProvenance;
-	LogInfo("HD: pack {} ({} images, {}x{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "");
+	LogInfo("HD: pack {} ({} images, {}x{}{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
 }
 
 void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites)
@@ -1059,12 +1276,30 @@ void SetTileset(std::string_view name)
 	Tileset = name;
 }
 
+void SetLightTables(const uint8_t *tables, size_t size)
+{
+	LightTablesBegin = tables;
+	LightTablesEnd = tables != nullptr ? tables + size : nullptr;
+}
+
 void NewScene()
 {
 	Overlays.clear();
 }
 
-SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn)
+void ForgetView(const Surface &out)
+{
+	if (!Active || out.surface != Target || !EnsurePlane()) return;
+	// Not cleared here (a few MB every frame): the pixels drawn before now are told apart by their serial (Stale) and cleared as the frame
+	// is composed
+	ViewX0 = std::max(out.region.x, 0);
+	ViewY0 = std::max(out.region.y, 0);
+	ViewX1 = std::min(out.region.x + out.region.w, Target->w);
+	ViewY1 = std::min(out.region.y + out.region.h, Target->h);
+	SceneSerial = NextSerial;
+}
+
+SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn, bool local)
 {
 	uint32_t image = 0;
 	const SpriteEntry *drawn = nullptr;
@@ -1094,6 +1329,13 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 	// Art with a box of its own covers that rectangle instead of the sprite's: its top-left is what the pixels record
 	const bool boxed = image != 0 && Images[image].boxed;
 	Begin(out, image, left + (boxed ? Images[image].boxDx : 0), top + (boxed ? Images[image].boxDy : 0), true);
+	if (!PixelShading) {
+		// Through a TRN that isn't a light table, the art is recoloured (unless its own art shows the TRN already): graded locally, as are
+		// draws whose pixels don't share one light
+		const bool lightTable = drawTrn != nullptr && drawTrn >= LightTablesBegin && drawTrn < LightTablesEnd;
+		const bool recoloured = original != nullptr || (marks == nullptr && drawTrn != nullptr && !lightTable);
+		TrackShade = local || recoloured ? ShadeLocal : ShadeDraw;
+	}
 	if (image == 0 || out.surface != Target || TrackPlane != Plane.data() || TrackImage != image) return; // not tracked in the game's own surface
 	if (boxed) Free.whole = Free.on;
 	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
@@ -1113,6 +1355,7 @@ PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, 
 	if (Active && !Tileset.empty())
 		image = ImageId("tile/" + Tileset + "/" + std::to_string(pillar) + ".png", 64, rows * 32);
 	Begin(out, image, out.region.x + bottomLeft.x, out.region.y + bottomLeft.y - rows * 32 + 1);
+	if (!PixelShading) TrackShade = ShadeLocal; // lit per piece or per pixel
 }
 
 PillarScope::~PillarScope()
