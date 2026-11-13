@@ -981,5 +981,162 @@ TEST(HdTest, ABoxThatCantBeReadIsIgnored)
 	SDL_FreeSurface(frame);
 }
 
+// Shading (hd.hpp, "Shading"): two palette ramps that a light table darkens by different shares, and a recolour
+constexpr uint8_t Other = 40;
+constexpr uint8_t OwnLit = 50;
+constexpr uint8_t OtherLit = 60;
+constexpr uint8_t Black = 0;
+
+std::array<SDL_Color, 256> ShadingPalette()
+{
+	std::array<SDL_Color, 256> colors = Palette();
+	colors[Black] = { 0, 0, 0, 255 };
+	colors[Other] = { 100, 150, 100, 255 };
+	colors[OwnLit] = { 100, 25, 25, 255 };    // Own at half light
+	colors[OtherLit] = { 25, 37, 25, 255 };   // Other at a quarter
+	return colors;
+}
+
+/** A CLX list of one 8x4 sprite: the left half of every row ``Own``, the right half ``Other``. */
+std::vector<uint8_t> TwoToneSprite()
+{
+	std::vector<uint8_t> data = { 1, 0, 0, 0, 12, 0, 0, 0, 54, 0, 0, 0, 6, 0, 8, 0, 4, 0 };
+	for (int row = 0; row < 4; ++row)
+		data.insert(data.end(), { 0xF8, Own, Own, Own, Own, Other, Other, Other, Other });
+	return data;
+}
+
+/**
+ * Draws the two-tone sprite (lo pixels x 4..11, y 1..4 of a surface 6 high) through ``trn`` (none: ClxDraw), with flat art ``FrontArt``,
+ * in a pack with ``extra`` lines; ``lightTable``: ``trn`` is one of the game's light tables. ``between`` runs after the draw, before the
+ * frame is presented. Returns the HD frame (scale 2).
+ */
+SDL_Surface *DrawShadingScenario(const std::string &name, const std::string &extra, const uint8_t *trn, bool lightTable,
+    const std::function<void(SDL_Surface *, const Surface &)> &between = {})
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = ShadingPalette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n" << extra;
+		fs::create_directories(pack / "sprite" / name / "two");
+		SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 16, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+		SDL_FillRect(s, nullptr, SDL_MapRGBA(s->format, FrontArt.r, FrontArt.g, FrontArt.b, 255));
+		IMG_SavePNG(s, (pack / "sprite" / name / "two/0.0.png").string().c_str());
+		SDL_FreeSurface(s);
+		index << "image sprite/" << name << "/two/0.0.png palettes/test.pal\n";
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+	hd::SetLightTables(lightTable ? trn : nullptr, lightTable ? 256 : 0);
+
+	// Not the size of any other test's surface (nor of this scenario's other calls), so that the provenance plane starts clean
+	static int calls = 0;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 16 + 4 * calls++, 6, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+	static std::vector<uint8_t> two;
+	two = TwoToneSprite();
+	hd::RegisterSpriteList(name + "\\Two.CL2", 0, ClxSpriteList { two.data() });
+	if (trn != nullptr)
+		ClxDrawTRN(out, { 4, 4 }, ClxSpriteList { two.data() }[0], trn);
+	else
+		ClxDraw(out, { 4, 4 }, ClxSpriteList { two.data() }[0]);
+	if (between) between(pal, out);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	hd::SetLightTables(nullptr, 0);
+	fs::remove_all(pack);
+	SDL_FreeSurface(pal);
+	return frame;
+}
+
+std::array<uint8_t, 256> Identity()
+{
+	std::array<uint8_t, 256> t;
+	for (int i = 0; i < 256; ++i)
+		t[i] = static_cast<uint8_t>(i);
+	return t;
+}
+
+/** Each channel of ``art`` times the sum of ``live`` over the sum of ``ref`` (both halves of the sprite alike), as the layer rounds it. */
+int SumGraded(int art, int liveA, int liveB, int refA, int refB)
+{
+	const uint64_t live = 16U * liveA + 16U * liveB, ref = 16U * refA + 16U * refB;
+	return static_cast<int>((art * (((live << 16) + ref - 1) / ref)) >> 16);
+}
+
+TEST(HdTest, ALitSpriteIsShadedAsAWholeNotPixelByPixel)
+{
+	// The light table darkens Own to half and Other to a quarter: per pixel that would draw the original's two halves into the flat art
+	std::array<uint8_t, 256> light = Identity();
+	light[Own] = OwnLit;
+	light[Other] = OtherLit;
+	SDL_Surface *frame = DrawShadingScenario("shadewhole", "", light.data(), true);
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color left = At(frame, 9, 4), right = At(frame, 22, 4);
+	ExpectColor(right, left.r, left.g, left.b, "both halves alike");
+	ExpectColor(left, SumGraded(FrontArt.r, 100, 25, 200, 100), SumGraded(FrontArt.g, 25, 37, 50, 150), SumGraded(FrontArt.b, 25, 25, 50, 100),
+	    "the sprite's live colours over its reference colours");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, ASpriteLitToBlackIsBlack)
+{
+	// A factor of 0 used to mean "add the offset": art lit to black kept most of its colour (monsters showing in the dark)
+	std::array<uint8_t, 256> dark {};
+	SDL_Surface *frame = DrawShadingScenario("shadeblack", "", dark.data(), true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), 0, 0, 0, "lit to black");
+	ExpectColor(At(frame, 22, 4), 0, 0, 0, "lit to black");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, ARecolourKeepsItsRegions)
+{
+	// Through a TRN that isn't a light table only Own changes: the left edge takes the recolour, the right edge keeps its colour
+	std::array<uint8_t, 256> recolour = Identity();
+	recolour[Own] = Swapped;
+	SDL_Surface *frame = DrawShadingScenario("shaderecolour", "", recolour.data(), false);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 8, 4), 30, 60, 240, "left edge: Own, recoloured to Swapped");
+	ExpectColor(At(frame, 23, 4), FrontArt.r, FrontArt.g, FrontArt.b, "right edge: Other, as it is");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, PixelShadingKeepsTheOldGrade)
+{
+	std::array<uint8_t, 256> light = Identity();
+	light[Own] = OwnLit;
+	light[Other] = OtherLit;
+	SDL_Surface *frame = DrawShadingScenario("shadepixel", "shading pixel\n", light.data(), true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), FrontArt.r / 2, FrontArt.g / 2, FrontArt.b / 2, "Own: half");
+	ExpectColor(At(frame, 22, 4), FrontArt.r / 4, FrontArt.g * 37 / 150, FrontArt.b / 4, "Other: a quarter");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, TheViewForgetsArtDrawnInEarlierFrames)
+{
+	// The game fills what it doesn't draw (unlit tiles) without the layer seeing it; a pixel that keeps its index must not keep its art
+	SDL_Surface *frame = DrawShadingScenario("shadeforget", "", nullptr, false, [](SDL_Surface *, const Surface &out) { hd::ForgetView(out); });
+	ASSERT_NE(frame, nullptr);
+	const SDL_Color own = ShadingPalette()[Own];
+	ExpectColor(At(frame, 9, 4), own.r, own.g, own.b, "the pixel's own colour, no art");
+	SDL_FreeSurface(frame);
+}
+
 } // namespace
 } // namespace devilution

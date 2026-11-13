@@ -13,6 +13,17 @@
  * graded per channel by live[written] / reference[source], where reference is the palette the art was
  * authored against: that carries lighting, recolours, fades and palette cycling over to true colour.
  *
+ * Shading: the grade is never taken pixel by pixel from the original (a light table darkens each palette ramp by a different share, and a
+ * recolour moves some indices and not others, so a per-pixel ratio stamps the 1997 picture into art drawn anew). Instead:
+ *   - a sprite drawn through one light table (or none) - monsters, players, items, missiles, objects, the panels - takes one grade per
+ *     draw: the sum of live[written] over the sum of reference[source] over all the pixels it drew that are still on screen, per channel;
+ *   - a sprite drawn through a recolour (a TRN that is not a light table, or a type's TRN its art is graded through), blended, or lit by
+ *     the per-pixel lightmap, and every pillar, takes that sum over the pixels of the same draw within 2 original pixels (hd.cpp
+ *     LocalRadius), so the light gradient and the recolour's regions carry over without the original's pixel pattern;
+ *   - a sum lit to black grades to black (the per-pixel grade read a factor of 0 as "add the offset", so art lit to black kept most of
+ *     its colour);
+ *   - "shading pixel" in hd.txt keeps the old per-pixel grade everywhere.
+ *
  * Pack layout (a folder, given by DEVILUTIONX_HD_PACK):
  *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line, and optionally
  *                                             "silhouette free" (see below)
@@ -56,6 +67,7 @@
  * relative to the sprite's top-left. A frame without the chunk is drawn exactly as before.
  */
 
+#include <cstddef>
 #include <cstdint>
 #include <string_view>
 
@@ -74,9 +86,10 @@ struct PixelProvenance {
 	int16_t top;
 	uint8_t source;  ///< the art's own colour index, before lighting, TRN or blending
 	uint8_t written; ///< the index written to the PalSurface
-	uint8_t free;    ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp); 2 = added outside the sprite's footprint
-	uint8_t under;   ///< drawn as foliage (TrackUnder): ground cover, which effect layers stay on top of
-	uint32_t serial; ///< which draw wrote the pixel
+	uint8_t free : 2;  ///< drawn with a free silhouette: what was under the pixel is kept (see hd.cpp); 2 = added outside the sprite's footprint
+	uint8_t under : 1; ///< drawn as foliage (TrackUnder): ground cover, which effect layers stay on top of
+	uint8_t shade : 2; ///< how the art is graded (see the top of this file): 0 per draw, 1 over the pixels of its draw nearby, 2 per pixel
+	uint32_t serial;   ///< which draw wrote the pixel
 };
 
 /**
@@ -97,6 +110,8 @@ extern thread_local uint32_t TrackSerial;
  * cut notches out of it. Pixels a sprite added outside its footprint (free == 2) therefore stay on top of foliage; its own pixels do not.
  */
 extern thread_local uint8_t TrackUnder;
+/** How the draw in progress is graded (PixelProvenance::shade). */
+extern thread_local uint8_t TrackShade;
 
 /** Record ``n`` pixels just written at ``dst`` from the art indices ``src``. */
 inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
@@ -108,7 +123,7 @@ inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, TrackSerial };
 	}
 }
 
@@ -122,7 +137,7 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackShade, TrackSerial };
 	}
 }
 
@@ -180,13 +195,30 @@ void RequestDump(std::string_view name);
  */
 void NewScene();
 
+/**
+ * The game view ``out`` is about to be drawn anew: from now on, what drew its pixels before counts for nothing (a pixel in it not drawn again
+ * shows its own colour). The game fills what it doesn't draw (unlit and unexplored tiles, the space outside the map) without the layer seeing
+ * it, and those pixels mostly keep the very index (black) they held, so without this they kept showing art drawn there frames ago, and art kept
+ * behind free silhouettes from frames ago.
+ */
+void ForgetView(const Surface &out);
+
 /** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
 void SetTileset(std::string_view name);
 
-/** Tracks the pixels a CLX sprite draw writes (when it draws into the PalSurface). ``drawTrn``: the TRN the draw maps through. */
+/**
+ * The game's light tables (``size`` bytes from ``tables``): a sprite drawn through one of them is only lit, and takes one grade for the whole
+ * draw; through any other TRN it is recoloured, and is graded locally (see the top of this file).
+ */
+void SetLightTables(const uint8_t *tables, size_t size);
+
+/**
+ * Tracks the pixels a CLX sprite draw writes (when it draws into the PalSurface). ``drawTrn``: the TRN the draw maps through. ``local``: the
+ * draw's pixels don't share one light (blended over what is behind, or lit by the per-pixel lightmap), so they are graded locally.
+ */
 class SpriteScope {
 public:
-	SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn = nullptr);
+	SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn = nullptr, bool local = false);
 	~SpriteScope();
 
 	/** For a recoloured sprite with HD art: its pixel data before recolouring, and the recolour. */

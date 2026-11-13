@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <format>
+#include <type_traits>
 
 #include "engine/point.hpp"
 #include "engine/render/blit_impl.hpp"
@@ -655,12 +656,17 @@ struct HdMapMarked {
 	}
 };
 
+/** Blits whose pixels don't share one light (blended over what is behind, or lit per pixel): the HD layer grades their art locally. */
+template <typename BlitFn>
+constexpr bool HdLocalShade = std::is_same_v<BlitFn, BlitWithLightmap> || std::is_same_v<BlitFn, BlitBlended>
+    || std::is_same_v<BlitFn, BlitBlendedWithMap> || std::is_same_v<BlitFn, BlitBlendedWithLightmap>;
+
 /** ``drawTrn``: the TRN ``blitFn`` maps through, if any, so the HD layer can use art of that swap. */
 template <typename BlitFn>
 void DrawClx(const Surface &out, Point position, ClxSprite clx, BlitFn blitFn, const uint8_t *drawTrn = nullptr)
 {
 	if (hd::Enabled()) {
-		const hd::SpriteScope scope(out, position, clx, drawTrn);
+		const hd::SpriteScope scope(out, position, clx, drawTrn, HdLocalShade<BlitFn>);
 		if (scope.marks != nullptr) {
 			DoRenderBackwards(out, position, clx.pixelData(), clx.pixelDataSize(), clx.width(), clx.height(), HdMapMarked<BlitFn> { blitFn, scope.marks });
 			return;
