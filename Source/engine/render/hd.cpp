@@ -59,6 +59,7 @@ struct HdImage {
 	bool boxed = false; ///< a sprite frame whose art covers more than the sprite ("hdbox"): loW x loH is then the art's rectangle
 	int boxDx = 0;      ///< where that rectangle starts, relative to the sprite's top-left
 	int boxDy = 0;
+	std::string file;   ///< the pack file the picture was loaded from: a palette swap's art finds its own effect layer by it (FxOf)
 };
 
 struct SpriteEntry {
@@ -256,6 +257,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 		if (LoadImage(file, entry->second, img)) {
 			img.loW = loW;
 			img.loH = loH;
+			img.file = file;
 			if (file.compare(0, 7, "sprite/") == 0) ReadBox(file, img);
 			Images.push_back(std::move(img));
 			id = static_cast<uint32_t>(Images.size() - 1);
@@ -292,13 +294,19 @@ std::string ReadPngText(const std::string &path, std::string_view keyword)
 
 /**
  * The effect layer of the sprite frame ``entry``, drawn with the art ``image``: "fx/<path>/<group>.<frame>.png" beside
- * "sprite/<path>/<group>.<frame>.png". 0 when the pack has none, or the file doesn't say where it goes.
+ * "sprite/<path>/<group>.<frame>.png". Art of a palette swap ("sprite/<path>@<swap>/...") may have a layer of its own, "fx/<path>@<swap>/...",
+ * which then replaces the body's; a swap without one shows the body's. 0 when the pack has none, or the file doesn't say where it goes.
  */
 uint32_t FxOf(uint32_t image, const SpriteEntry &entry)
 {
 	if (Images[image].fxLooked) return Images[image].fx;
 	Images[image].fxLooked = true;
-	const std::string file = "fx" + entry.Key({}).substr(std::strlen("sprite"));
+	std::string file = "fx" + entry.Key({}).substr(std::strlen("sprite"));
+	const std::string artFile = Images[image].file; // (a copy: ImageId below may grow Images)
+	if (artFile.compare(0, 7, "sprite/") == 0 && artFile != entry.Key({})) {
+		const std::string swapFile = "fx" + artFile.substr(std::strlen("sprite"));
+		if (Manifest.count(swapFile) != 0) file = swapFile;
+	}
 	if (Manifest.count(file) == 0) return 0;
 	int dx = 0, dy = 0, w = 0, h = 0;
 	std::istringstream words(ReadPngText(PackDir + "/" + file, "hdfx"));

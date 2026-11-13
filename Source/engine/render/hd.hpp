@@ -41,7 +41,8 @@
  * by the game's lighting (it is light), only by palette fades. Whatever is drawn after the sprite (a wall in front, a later sprite, the
  * panels, the cursor) covers the layer as it covers the sprite; parts of the effect behind the figure are left out of the file by whoever
  * makes it. A frame with an effect layer is also free of the limit on how far outside the original footprint its art may be drawn
- * (silhouette free), since a cast's pose is not bound to the original's.
+ * (silhouette free), since a cast's pose is not bound to the original's. A palette swap's art ("sprite/<path>@<swap>/...") may have a layer
+ * of its own ("fx/<path>@<swap>/...", with its own "hdfx"), which then replaces the body's for that swap; a swap without one shows the body's.
  *
  * Art larger than its sprite ("hdbox"): a sprite frame's picture may cover a rectangle other than the sprite's own, so that a figure that
  * reaches past the original's canvas (a raised sword's tip, a foot) is drawn whole instead of being cut at it. Its tEXt chunk "hdbox" =
