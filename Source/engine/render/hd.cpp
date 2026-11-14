@@ -393,8 +393,13 @@ struct FreeDraw {
 	int left = 0, top = 0;
 	int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
 	bool whole = false; ///< no limit on how far from the sprite's own pixels its art is drawn (art with an effect layer, or a box of its own)
+	uint32_t serial = 0; ///< the draw's serial: the pixels it wrote carry it
 };
 thread_local FreeDraw Free;
+
+/** What was under the art's rectangle (the PalSurface's indices and the pixels' provenance) when a free draw began: BehindIdx / BehindProv take it only where the draw wrote a pixel (CommitBehind). */
+thread_local std::vector<uint8_t> SavedIdx;
+thread_local std::vector<PixelProvenance> SavedProv;
 
 /** The sprite draw in progress, when its art has an effect layer: End adds it to Overlays. */
 struct FxDraw {
@@ -489,12 +494,16 @@ void Begin(const Surface &out, uint32_t image, int left, int top, bool free = fa
 	const int y1 = std::min({ top + img.loH, out.region.y + out.region.h, Target->h });
 	if (x0 >= x1 || y0 >= y1) return;
 	Free = { true, image, left, top, x0, y0, x1, y1 };
+	Free.serial = TrackSerial;
 	TrackFree = 1;
 	const auto *pixels = static_cast<const uint8_t *>(Target->pixels);
+	const size_t rowLen = static_cast<size_t>(x1 - x0);
+	SavedIdx.resize(rowLen * (y1 - y0));
+	SavedProv.resize(rowLen * (y1 - y0));
 	for (int y = y0; y < y1; ++y) {
 		const size_t at = static_cast<size_t>(y) * PlanePitch + x0;
-		std::memcpy(&BehindIdx[at], pixels + at, x1 - x0);
-		std::copy_n(&Plane[at], x1 - x0, &BehindProv[at]);
+		std::memcpy(&SavedIdx[(y - y0) * rowLen], pixels + at, rowLen);
+		std::copy_n(&Plane[at], rowLen, &SavedProv[(y - y0) * rowLen]);
 	}
 }
 
@@ -670,10 +679,31 @@ void AddOverlay()
 	Overlays.push_back(std::move(o));
 }
 
+/**
+ * The pixels a free draw wrote (its own, and the ones ExtendFootprint added) keep what was under them: what BehindIdx / BehindProv held there
+ * is replaced. A pixel the draw did not write keeps the record of the draw that did: the art's rectangle also covers the transparent parts
+ * of a sprite, and recording those too made a later sprite whose rectangle overlaps an earlier one (a town building over the hero) take the
+ * earlier sprite's pixels for the "ground" under them, so the earlier art blended over its own 1997 original where it is transparent.
+ */
+void CommitBehind()
+{
+	const size_t rowLen = static_cast<size_t>(Free.x1 - Free.x0);
+	if (BehindProv.size() != Plane.size() || SavedIdx.size() != rowLen * (Free.y1 - Free.y0) || SavedProv.size() != SavedIdx.size()) return;
+	for (int y = Free.y0; y < Free.y1; ++y)
+		for (int x = Free.x0; x < Free.x1; ++x) {
+			const size_t at = static_cast<size_t>(y) * PlanePitch + x;
+			if (Plane[at].serial != Free.serial) continue;
+			const size_t saved = (y - Free.y0) * rowLen + (x - Free.x0);
+			BehindIdx[at] = SavedIdx[saved];
+			BehindProv[at] = SavedProv[saved];
+		}
+}
+
 void End()
 {
 	if (Free.on) {
 		ExtendFootprint();
+		CommitBehind();
 		Free.on = false;
 	}
 	if (Fx.fx != 0) {
