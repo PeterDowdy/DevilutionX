@@ -171,6 +171,19 @@ void WriteArtWithHole(const fs::path &pack, const std::string &file, SDL_Color c
 	index << "image " << file << " palettes/test.pal\n";
 }
 
+/** One 8x8 HD image: opaque ``c`` except its left two columns (the first pixel of a 4x4 sprite at scale 2), which are transparent. */
+void WriteArtLeftClear(const fs::path &pack, const std::string &file, SDL_Color c, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+	for (int y = 0; y < 8; ++y)
+		for (int x = 0; x < 8; ++x)
+			static_cast<uint32_t *>(s->pixels)[y * (s->pitch / 4) + x] = x < 2 ? 0U : (0xFF000000U | (c.r << 16) | (c.g << 8) | c.b);
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	index << "image " << file << " palettes/test.pal\n";
+}
+
 SDL_Surface *LoadFrame(const fs::path &dump)
 {
 	for (const fs::directory_entry &entry : fs::directory_iterator(dump)) {
@@ -195,7 +208,7 @@ constexpr uint8_t BackgroundIndex = 5;
  * the art of the front sprite of the second has a hole over its pixel (17, 5). ``after`` runs before the frame is presented.
  * Returns the HD frame; the PalSurface comes back in ``palOut``.
  */
-SDL_Surface *DrawFreeScenario(const std::string &name, bool free, int width, SDL_Surface **palOut, const std::function<void(SDL_Surface *)> &after = {})
+SDL_Surface *DrawFreeScenario(const std::string &name, bool free, int width, SDL_Surface **palOut, const std::function<void(SDL_Surface *)> &after = {}, bool overlap = false)
 {
 	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
 	const fs::path dump = pack / "dump";
@@ -213,6 +226,7 @@ SDL_Surface *DrawFreeScenario(const std::string &name, bool free, int width, SDL
 		WriteArtWithHole(pack, "sprite/" + name + "/a/0.0.png", FrontArt, false, index);
 		WriteArtWithHole(pack, "sprite/" + name + "/back/0.0.png", BackArt, false, index);
 		WriteArtWithHole(pack, "sprite/" + name + "/front/0.0.png", FrontArt, true, index);
+		WriteArtLeftClear(pack, "sprite/" + name + "/overlap/0.0.png", FrontArt, index);
 	}
 	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
 	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
@@ -228,16 +242,21 @@ SDL_Surface *DrawFreeScenario(const std::string &name, bool free, int width, SDL
 	const Surface out(pal);
 
 	// Sprites are found by the address of their pixel data: keep these alive and in place
-	static std::vector<uint8_t> narrow, back, front;
+	static std::vector<uint8_t> narrow, back, front, later;
 	narrow = NarrowSprite();
 	back = Sprite();
 	front = Sprite();
+	later = NarrowSprite();
 	hd::RegisterSpriteList(name + "\\A.CL2", 0, ClxSpriteList { narrow.data() });
 	hd::RegisterSpriteList(name + "\\Back.CL2", 0, ClxSpriteList { back.data() });
 	hd::RegisterSpriteList(name + "\\Front.CL2", 0, ClxSpriteList { front.data() });
+	hd::RegisterSpriteList(name + "\\Overlap.CL2", 0, ClxSpriteList { later.data() });
 	ClxDraw(out, { 8, 7 }, ClxSpriteList { narrow.data() }[0]);
 	ClxDraw(out, { 16, 7 }, ClxSpriteList { back.data() }[0]);
 	ClxDraw(out, { 16, 7 }, ClxSpriteList { front.data() }[0]);
+	// A later sprite whose art rectangle covers the front sprite's hole (lo pixel (17, 5)), though its own left column, with that pixel, is
+	// transparent, in the original and in its art
+	if (overlap) ClxDraw(out, { 17, 7 }, ClxSpriteList { later.data() }[0]);
 	if (after) after(pal);
 	hd::Present(nullptr, pal);
 	SDL_Surface *frame = LoadFrame(dump);
@@ -292,6 +311,21 @@ TEST(HdTest, FreeSilhouetteGivesWayToLaterDraws)
 	ExpectColor(At(frame, 16, 8), unique.r, unique.g, unique.b, "an extension pixel overwritten later");
 	ExpectColor(At(frame, 18, 10), unique.r, unique.g, unique.b, "a sprite pixel overwritten later");
 	ExpectColor(At(frame, 18, 8), FrontArt.r, FrontArt.g, FrontArt.b, "its neighbour");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, ALaterSpritesRectangleLeavesWhatIsBehindAnEarlierOneAlone)
+{
+	// The town's buildings are drawn after the hero and their art rectangles cover him, with nothing drawn over most of it. Every pixel of
+	// such a rectangle used to take the sprite under it as its "ground": the hero's transparent art then blended over his own original
+	// pixels (the 1997 warrior behind the new one). Now a draw keeps the record only of the pixels it wrote.
+	SDL_Surface *pal = nullptr;
+	SDL_Surface *frame = DrawFreeScenario("rect", true, 52, &pal, {}, true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 34, 10), BackArt.r, BackArt.g, BackArt.b, "the hole still shows what was behind the front sprite");
+	ExpectColor(At(frame, 35, 11), BackArt.r, BackArt.g, BackArt.b, "the hole still shows what was behind, its last pixel");
+	ExpectColor(At(frame, 32, 10), FrontArt.r, FrontArt.g, FrontArt.b, "the front art beside the hole");
 	SDL_FreeSurface(frame);
 	SDL_FreeSurface(pal);
 }
