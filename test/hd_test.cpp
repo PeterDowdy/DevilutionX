@@ -94,6 +94,7 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 		WriteArt(pack, "sprite/test/b/0.0.png", { 120, 60, 60 }, index);
 		WriteArt(pack, "sprite/test/b@swap/0.0.png", { 60, 120, 60 }, index);
 		WriteArt(pack, "sprite/test/b@swap+u/0.0.png", { 120, 120, 60 }, index);
+		WriteArt(pack, "sprite/test/b@swap+u~bonesaw-the-litch/0.0.png", { 200, 120, 60 }, index);
 	}
 	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
 	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
@@ -101,7 +102,7 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 	hd::Init();
 	ASSERT_TRUE(hd::Enabled());
 
-	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 32, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 48, 8, 8, SDL_PIXELFORMAT_INDEX8);
 	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
 	SDL_FillRect(pal, nullptr, 0);
 	hd::SetTarget(pal);
@@ -115,6 +116,10 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 	uniqueTrn[Own] = Swapped;
 	uniqueTrn[Swapped] = Unique;
 	hd::NameTrn(uniqueTrn.data(), "Monsters\\Monsters\\U");
+	// Two more unique monsters with that same TRN (each loads a copy of its own): one with art that is its alone, one without
+	std::array<uint8_t, 256> bonesawTrn = uniqueTrn, stormbaneTrn = uniqueTrn;
+	hd::NameTrn(bonesawTrn.data(), "Monsters\\Monsters\\U", "Bonesaw the Litch");
+	hd::NameTrn(stormbaneTrn.data(), "Monsters\\Monsters\\U", "Stormbane");
 
 	std::vector<uint8_t> a = Sprite();
 	std::vector<uint8_t> b = Sprite();
@@ -129,6 +134,8 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 	ClxDrawTRN(out, { 8, 3 }, ClxSpriteList { a.data() }[0], uniqueTrn.data());
 	ClxDraw(out, { 16, 3 }, ClxSpriteList { b.data() }[0]);
 	ClxDrawTRN(out, { 24, 3 }, ClxSpriteList { b.data() }[0], uniqueTrn.data());
+	ClxDrawTRN(out, { 32, 3 }, ClxSpriteList { b.data() }[0], bonesawTrn.data());
+	ClxDrawTRN(out, { 40, 3 }, ClxSpriteList { b.data() }[0], stormbaneTrn.data());
 	hd::Present(nullptr, pal);
 
 	SDL_Surface *hd = IMG_LoadPNG((dump / "hd-00000.png").string().c_str());
@@ -140,6 +147,8 @@ TEST(HdTest, DrawsTheArtOfEachPaletteSwap)
 	ExpectColor(At(argb, 18, 2), 60, 60, 120, "a through the unique's TRN");
 	ExpectColor(At(argb, 34, 2), 60, 120, 60, "b in its type's swap");
 	ExpectColor(At(argb, 50, 2), 120, 120, 60, "b in its type's swap, through the unique's TRN");
+	ExpectColor(At(argb, 66, 2), 200, 120, 60, "b through the TRN of a unique with art of its own");
+	ExpectColor(At(argb, 82, 2), 120, 120, 60, "b through the TRN of a unique without: the art its TRN's monsters share");
 	SDL_FreeSurface(argb);
 	SDL_FreeSurface(hd);
 	SDL_FreeSurface(pal);

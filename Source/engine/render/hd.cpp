@@ -78,7 +78,7 @@ struct SpriteEntry {
 	std::vector<uint8_t> original; ///< pixel data before ClxApplyTrans, when its own art is graded through it
 	std::array<uint8_t, 256> trn;
 
-	/** The pack file of this frame in a swap ("bluered", "bluered+rcrn", "+eth"), or itself for none. */
+	/** The pack file of this frame in a swap ("bluered", "bluered+rcrn", "+eth", "+general~moonbender"), or itself for none. */
 	[[nodiscard]] std::string Key(std::string_view swap) const
 	{
 		return swap.empty() ? stem + frame : stem + "@" + std::string(swap) + frame;
@@ -87,6 +87,7 @@ struct SpriteEntry {
 
 struct NamedTrn {
 	std::string name;
+	std::string own; ///< the name with its one monster's after a "~" ("general~moonbender"); empty when the TRN was named without one
 	uint32_t check;
 };
 
@@ -197,13 +198,30 @@ std::string TrnStem(std::string_view name)
 	return out;
 }
 
-/** The name of a TRN that draws pass, when it was named and hasn't changed since. */
-std::string_view TrnName(const uint8_t *trn)
+/** "Bonesaw the Litch" -> "bonesaw-the-litch": a unique monster's name in pack paths (letters and digits, anything else a single "-"). */
+std::string NameSlug(std::string_view name)
 {
-	if (trn == nullptr) return {};
+	std::string out;
+	bool gap = false;
+	for (const char c : name) {
+		if (std::isalnum(static_cast<unsigned char>(c)) == 0) {
+			gap = !out.empty();
+			continue;
+		}
+		if (gap) out += '-';
+		gap = false;
+		out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return out;
+}
+
+/** The names of a TRN that draws pass, when it was named and hasn't changed since. */
+const NamedTrn *TrnNamed(const uint8_t *trn)
+{
+	if (trn == nullptr) return nullptr;
 	const auto found = TrnNames.find(trn);
-	if (found == TrnNames.end() || found->second.check != TrnChecksum(trn)) return {};
-	return found->second.name;
+	if (found == TrnNames.end() || found->second.check != TrnChecksum(trn)) return nullptr;
+	return &found->second;
 }
 
 /** "Monsters\Zombie\ZombieW.CL2" -> "monsters/zombie/zombiew" */
@@ -1468,10 +1486,13 @@ NamedRecolour::~NamedRecolour()
 	RecolourName.clear();
 }
 
-void NameTrn(const uint8_t *trn, std::string_view name)
+void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner)
 {
 	if (!Active || trn == nullptr) return;
-	TrnNames[trn] = { TrnStem(name), TrnChecksum(trn) };
+	std::string stem = TrnStem(name);
+	const std::string slug = NameSlug(owner);
+	std::string own = slug.empty() ? std::string() : stem + "~" + slug;
+	TrnNames[trn] = { std::move(stem), std::move(own), TrnChecksum(trn) };
 }
 
 void SetTarget(SDL_Surface *palSurface)
@@ -1535,9 +1556,13 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
 			const SpriteEntry &entry = found->second;
 			drawn = &entry;
-			// The most specific art the pack has: the draw's own swap on top of the sprite's, the sprite's swap, itself
-			if (const std::string_view unique = TrnName(drawTrn); !unique.empty()) {
-				image = ImageId(entry.Key(entry.recolour + "+" + std::string(unique)), clx.width(), clx.height());
+			// The most specific art the pack has: the one monster's the draw's TRN belongs to, the draw's own swap on top of the sprite's
+			// (art that every monster with that TRN shares), the sprite's swap, itself
+			if (const NamedTrn *unique = TrnNamed(drawTrn); unique != nullptr) {
+				if (!unique->own.empty())
+					image = ImageId(entry.Key(entry.recolour + "+" + unique->own), clx.width(), clx.height());
+				if (image == 0)
+					image = ImageId(entry.Key(entry.recolour + "+" + unique->name), clx.width(), clx.height());
 				if (image != 0) marks = drawTrn;
 			}
 			if (image == 0 && entry.swapArt)

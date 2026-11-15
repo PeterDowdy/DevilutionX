@@ -37,6 +37,12 @@
  *                                             type's TRN ("@bluered"), a unique monster's on top ("@bluered+rcrn",
  *                                             or "@+eth" on a type without one). Drawn as it is where the pack has
  *                                             it; otherwise the frame without the swap is graded as usual.
+ *                                             Several unique monsters share one TRN (and some one type as well), so
+ *                                             each may have art that is its alone, under its name after a "~":
+ *                                             "@+general~moonbender", "@thinv3+general~bonesaw-the-litch" (the name
+ *                                             in unique_monstdat.tsv in lower case, letters and digits kept, each run
+ *                                             of anything else a "-"). That art is looked for first; a unique without
+ *                                             it shows the art its TRN's monsters share ("@+general").
  *   sprite/<mpq path without ext>@hf/<group>.<frame>.png   a menu PCX that a Hellfire archive supplies under Diablo's path
  *                                             (ui_art/heros: Hellfire adds the monk as frame 3, Diablo's new hero): Hellfire's
  *                                             art only, it never falls back to the plain path's (Diablo's) art.
@@ -194,8 +200,11 @@ public:
 	~NamedRecolour();
 };
 
-/** Names a TRN that sprites are drawn through (a unique monster's: "rcrn"), for "@<swap>+<name>" art. */
-void NameTrn(const uint8_t *trn, std::string_view name);
+/**
+ * Names a TRN that sprites are drawn through (a unique monster's: "rcrn"), for "@<swap>+<name>" art, and with ``owner`` the one monster
+ * whose TRN it is ("Bonesaw the Litch"), for that monster's own "@<swap>+<name>~<owner in lower case, with dashes>" art.
+ */
+void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner = {});
 
 /**
  * Off-screen 8-bit buffers the game composes once and then copies to the screen (the control panel's BottomBuffer, the flask buffers): draws
