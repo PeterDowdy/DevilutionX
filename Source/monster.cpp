@@ -3321,7 +3321,8 @@ std::expected<void, std::string> InitTRNForUniqueMonster(Monster &monster)
 	char filestr[64];
 	*BufCopy(filestr, R"(monsters\monsters\)", UniqueMonstersData[static_cast<size_t>(monster.uniqueType)].mTrnName, ".trn") = '\0';
 	ASSIGN_OR_RETURN(monster.uniqueMonsterTRN, LoadFileInMemWithStatus<uint8_t>(filestr));
-	hd::NameTrn(monster.uniqueMonsterTRN.get(), UniqueMonstersData[static_cast<size_t>(monster.uniqueType)].mTrnName);
+	const UniqueMonsterData &unique = UniqueMonstersData[static_cast<size_t>(monster.uniqueType)];
+	hd::NameTrn(monster.uniqueMonsterTRN.get(), unique.mTrnName, unique.mName); // (the table's name, not the translated one)
 	return {};
 }
 
