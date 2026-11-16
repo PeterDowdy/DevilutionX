@@ -57,6 +57,7 @@ struct HdImage {
 	bool hasRef = false;
 	uint32_t palette = 0; ///< which reference palette (PaletteKeys): pillars are graded by light level and palette
 	bool world = false;   ///< art of the game world (monsters, heroes, towners, items, objects, missiles, levels), not of the panels and menus
+	bool figure = false;  ///< a monster's, hero's or towner's art (OverEarlierFigure)
 	std::vector<uint8_t> reach; ///< per original pixel: the art is opaque somewhere in its block (free silhouettes; made when first needed)
 	uint32_t fx = 0;            ///< a sprite frame's effect layer ("fx/..."), an image of its own; looked up when the frame is first drawn into the game view
 	bool fxLooked = false;
@@ -313,6 +314,8 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 			PaletteCount = static_cast<uint32_t>(PaletteKeys.size());
 			for (const char *world : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/", "sprite/items/", "sprite/objects/", "sprite/missiles/", "sprite/levels/", "sprite/nlevels/", "tile/" })
 				img.world = img.world || file.rfind(world, 0) == 0;
+			for (const char *figure : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/" })
+				img.figure = img.figure || file.rfind(figure, 0) == 0;
 			if (file.compare(0, 7, "sprite/") == 0) ReadBox(file, img);
 			Images.push_back(std::move(img));
 			id = static_cast<uint32_t>(Images.size() - 1);
@@ -616,6 +619,18 @@ void ExtendWholeArt(const HdImage &img)
 }
 
 /**
+ * Whether the pixel at ``at`` still shows a figure (a monster, hero or towner) drawn before the figure being drawn now: one drawn earlier
+ * stands further back, so the nearer figure's art goes over it as far as the art reaches (Peter 2026-11-15: "the monster is in front of
+ * the player spatially, but the player clips the monster and obscures the monster's shield").
+ */
+bool OverEarlierFigure(size_t at)
+{
+	const PixelProvenance &q = Plane[at];
+	return q.image != 0 && q.serial != TrackSerial && Images[q.image].figure && Images[Free.image].figure
+	    && q.written == static_cast<const uint8_t *>(Target->pixels)[at];
+}
+
+/**
  * Draws the art's pixels outside the sprite's footprint into the PalSurface: each takes the index, and so the lighting,
  * of the nearest pixel the sprite drew (preferring one that isn't near black), and is recorded as the sprite's own (free == 2: foliage drawn
  * later goes under it, see TrackUnder).
@@ -630,6 +645,7 @@ void ExtendFootprint()
 	}
 	auto *pixels = static_cast<uint8_t *>(Target->pixels);
 	constexpr int Radius = 6;
+	constexpr int FigureRadius = 24; // over a figure drawn earlier (OverEarlierFigure)
 	struct Extension {
 		size_t at;
 		const PixelProvenance *donor;
@@ -642,7 +658,8 @@ void ExtendFootprint()
 			if (img.reach[static_cast<size_t>(y - Free.top) * img.loW + (x - Free.left)] == 0) continue;
 			const PixelProvenance *best = nullptr;
 			int bestScore = 1000;
-			for (int r = 1; r <= Radius && r < bestScore; ++r) {
+			const int limit = OverEarlierFigure(at) ? FigureRadius : Radius;
+			for (int r = 1; r <= limit && r < bestScore; ++r) {
 				for (int dy = -r; dy <= r; ++dy) {
 					for (int dx = -r; dx <= r; ++dx) {
 						if (std::max(std::abs(dx), std::abs(dy)) != r) continue;
