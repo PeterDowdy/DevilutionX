@@ -30,6 +30,7 @@
 #include "engine/load_clx.hpp"
 #include "engine/palette.h"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "game_mode.hpp"
 #include "headless_mode.hpp"
@@ -71,6 +72,14 @@ const uint8_t BarColor[3] = { 138, 43, 254 };
 const int BarPos[3][2] = { { 53, 37 }, { 53, 421 }, { 53, 37 } };
 
 OptionalOwnedClxSpriteList ArtCutsceneWidescreen;
+
+/** A loading screen's widescreen backdrop (wider than 640, behind the picture), named for the HD layer so a pack can give it art too. */
+OptionalOwnedClxSpriteList LoadCutsceneWidescreen(const char *path)
+{
+	OptionalOwnedClxSpriteList art = LoadOptionalClx(path);
+	if (art) hd::RegisterSpriteList(path, 0, ClxSpriteList { *art });
+	return art;
+}
 
 SdlEventType CustomEventType = SDL_EVENT_USER;
 
@@ -141,67 +150,67 @@ void LoadCutsceneBackground(interface_mode uMsg)
 
 	switch (PickCutscene(uMsg)) {
 	case CutStart:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutstartw.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutstartw.clx");
 		celPath = "gendata\\cutstart";
 		palPath = "gendata\\cutstart.pal";
 		progress_id = 1;
 		break;
 	case CutTown:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutttw.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutttw.clx");
 		celPath = "gendata\\cuttt";
 		palPath = "gendata\\cuttt.pal";
 		progress_id = 1;
 		break;
 	case CutLevel1:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutl1dw.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutl1dw.clx");
 		celPath = "gendata\\cutl1d";
 		palPath = "gendata\\cutl1d.pal";
 		progress_id = 0;
 		break;
 	case CutLevel2:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cut2w.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cut2w.clx");
 		celPath = "gendata\\cut2";
 		palPath = "gendata\\cut2.pal";
 		progress_id = 2;
 		break;
 	case CutLevel3:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cut3w.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cut3w.clx");
 		celPath = "gendata\\cut3";
 		palPath = "gendata\\cut3.pal";
 		progress_id = 1;
 		break;
 	case CutLevel4:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cut4w.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cut4w.clx");
 		celPath = "gendata\\cut4";
 		palPath = "gendata\\cut4.pal";
 		progress_id = 1;
 		break;
 	case CutLevel5:
-		ArtCutsceneWidescreen = LoadOptionalClx("nlevels\\cutl5w.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("nlevels\\cutl5w.clx");
 		celPath = "nlevels\\cutl5";
 		palPath = "nlevels\\cutl5.pal";
 		progress_id = 1;
 		break;
 	case CutLevel6:
-		ArtCutsceneWidescreen = LoadOptionalClx("nlevels\\cutl6w.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("nlevels\\cutl6w.clx");
 		celPath = "nlevels\\cutl6";
 		palPath = "nlevels\\cutl6.pal";
 		progress_id = 1;
 		break;
 	case CutPortal:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutportlw.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutportlw.clx");
 		celPath = "gendata\\cutportl";
 		palPath = "gendata\\cutportl.pal";
 		progress_id = 1;
 		break;
 	case CutPortalRed:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutportrw.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutportrw.clx");
 		celPath = "gendata\\cutportr";
 		palPath = "gendata\\cutportr.pal";
 		progress_id = 1;
 		break;
 	case CutGate:
-		ArtCutsceneWidescreen = LoadOptionalClx("gendata\\cutgatew.clx");
+		ArtCutsceneWidescreen = LoadCutsceneWidescreen("gendata\\cutgatew.clx");
 		celPath = "gendata\\cutgate";
 		palPath = "gendata\\cutgate.pal";
 		progress_id = 1;
