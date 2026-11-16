@@ -1203,5 +1203,72 @@ TEST(HdTest, TheViewForgetsArtDrawnInEarlierFrames)
 	SDL_FreeSurface(frame);
 }
 
+TEST(HdTest, DroppedItemsDrawTheArtOfTheirOwnItemGraphic)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_items";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/items/swrdflip/0.0.png", { 120, 60, 60 }, index);      // what every sword's drop shares
+		WriteArt(pack, "sprite/items/swrdflip@c057/0.0.png", { 60, 120, 60 }, index); // the Bastard Sword's own
+		WriteArt(pack, "sprite/items/axe@c144/0.0.png", { 60, 60, 120 }, index);      // an item graphic's own, no shared art
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 48, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+
+	std::vector<uint8_t> sword = Sprite();
+	std::vector<uint8_t> axe = Sprite();
+	hd::RegisterSpriteList("Items\\Swrdflip.CEL", 0, ClxSpriteList { sword.data() });
+	hd::RegisterSpriteList("Items\\Axe.CEL", 0, ClxSpriteList { axe.data() });
+	ClxDraw(out, { 0, 3 }, ClxSpriteList { sword.data() }[0]); // no item named: the shared art
+	{
+		const hd::ItemGraphic bastardSword(57);
+		ClxDraw(out, { 8, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic shortSword(64); // no art of its own: the shared art
+		ClxDraw(out, { 16, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic axeGraphic(144);
+		ClxDraw(out, { 24, 3 }, ClxSpriteList { axe.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic battleAxe(101); // neither: the original sprite
+		ClxDraw(out, { 32, 3 }, ClxSpriteList { axe.data() }[0]);
+	}
+	ClxDraw(out, { 40, 3 }, ClxSpriteList { sword.data() }[0]); // the item's scope has ended
+	hd::Present(nullptr, pal);
+
+	SDL_Surface *argb = LoadFrame(dump);
+	ASSERT_NE(argb, nullptr);
+	ExpectColor(At(argb, 2, 2), 120, 60, 60, "a sword drawn without an item graphic");
+	ExpectColor(At(argb, 18, 2), 60, 120, 60, "the Bastard Sword: its own art");
+	ExpectColor(At(argb, 34, 2), 120, 60, 60, "the Short Sword: the art swords share");
+	ExpectColor(At(argb, 50, 2), 60, 60, 120, "an axe graphic with art of its own");
+	ExpectColor(At(argb, 66, 2), 200, 50, 50, "an axe graphic without: the original pixels");
+	ExpectColor(At(argb, 82, 2), 120, 60, 60, "after the item's draw");
+	SDL_FreeSurface(argb);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 } // namespace
 } // namespace devilution

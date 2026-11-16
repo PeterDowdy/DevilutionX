@@ -105,6 +105,7 @@ std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any 
 std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying, while a NamedRecolour lives
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
+thread_local std::string ItemArt; ///< "c057" while an ItemGraphic lives: the dropped item's own art is looked for first
 
 /** "shading pixel" in hd.txt: every pixel graded on its own, as before the shading was reworked (see the top of hd.hpp). */
 bool PixelShading = false;
@@ -1512,6 +1513,19 @@ void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner)
 	TrnNames[trn] = { std::move(stem), std::move(own), TrnChecksum(trn) };
 }
 
+ItemGraphic::ItemGraphic(int cursorGraphic)
+{
+	if (!Active || cursorGraphic < 0) return;
+	char name[16];
+	std::snprintf(name, sizeof(name), "c%03d", cursorGraphic);
+	ItemArt = name;
+}
+
+ItemGraphic::~ItemGraphic()
+{
+	ItemArt.clear();
+}
+
 void SetTarget(SDL_Surface *palSurface)
 {
 	Target = palSurface;
@@ -1573,9 +1587,11 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
 			const SpriteEntry &entry = found->second;
 			drawn = &entry;
-			// The most specific art the pack has: the one monster's the draw's TRN belongs to, the draw's own swap on top of the sprite's
-			// (art that every monster with that TRN shares), the sprite's swap, itself
-			if (const NamedTrn *unique = TrnNamed(drawTrn); unique != nullptr) {
+			// The most specific art the pack has: a dropped item graphic's own, the one monster's the draw's TRN belongs to, the draw's own
+			// swap on top of the sprite's (art that every monster with that TRN shares), the sprite's swap, itself
+			if (!ItemArt.empty() && entry.recolour.empty())
+				image = ImageId(entry.Key(ItemArt), clx.width(), clx.height());
+			if (const NamedTrn *unique = image == 0 ? TrnNamed(drawTrn) : nullptr; unique != nullptr) {
 				if (!unique->own.empty())
 					image = ImageId(entry.Key(entry.recolour + "+" + unique->own), clx.width(), clx.height());
 				if (image == 0)

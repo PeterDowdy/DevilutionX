@@ -724,7 +724,10 @@ void DrawItem(const Surface &out, int8_t itemIndex, Point targetBufferPosition, 
 	if (!IsPlayerInStore() && (itemIndex == pcursitem || AutoMapShowItems)) {
 		ClxDrawOutlineSkipColorZero(out, GetOutlineColor(item, false), position, sprite);
 	}
-	ClxDrawLight(out, position, sprite, lightTableIndex);
+	{
+		const hd::ItemGraphic itemGraphic(item._iCurs); // the item's own art for its drop animation, where the HD pack has it
+		ClxDrawLight(out, position, sprite, lightTableIndex);
+	}
 	if (item.AnimInfo.isLastFrame() || item._iCurs == ICURS_MAGIC_ROCK)
 		AddItemToLabelQueue(itemIndex, position);
 }

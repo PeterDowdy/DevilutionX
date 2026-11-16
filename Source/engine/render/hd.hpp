@@ -43,6 +43,11 @@
  *                                             in unique_monstdat.tsv in lower case, letters and digits kept, each run
  *                                             of anything else a "-"). That art is looked for first; a unique without
  *                                             it shows the art its TRN's monsters share ("@+general").
+ *   sprite/<mpq path without ext>@c<NNN>/<group>.<frame>.png   a dropped item's own art: every item of a drop class shares one
+ *                                             drop animation ("items/swrdflip" for all swords), so each item graphic (its inventory
+ *                                             cursor graphic, three digits: "items/swrdflip@c057" for the Bastard Sword's) may have
+ *                                             art of its own for that animation. Looked for first while the item draws (ItemGraphic);
+ *                                             an item without it shows the drop class's art ("items/swrdflip").
  *   sprite/<mpq path without ext>@hf/<group>.<frame>.png   a menu PCX that a Hellfire archive supplies under Diablo's path
  *                                             (ui_art/heros: Hellfire adds the monk as frame 3, Diablo's new hero): Hellfire's
  *                                             art only, it never falls back to the plain path's (Diablo's) art.
@@ -214,6 +219,18 @@ void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner =
  */
 void TrackOffscreen(SDL_Surface *buffer);
 void ForgetOffscreen(SDL_Surface *buffer);
+
+/**
+ * While it lives, the sprite draws are those of a dropped item with the cursor graphic ``cursorGraphic`` (Item::_iCurs): a frame looks for
+ * the art of that item graphic ("sprite/<path>@c<NNN>/...", see the pack layout above) before the art its drop animation shares.
+ */
+class ItemGraphic {
+public:
+	explicit ItemGraphic(int cursorGraphic);
+	~ItemGraphic();
+	ItemGraphic(const ItemGraphic &) = delete;
+	ItemGraphic &operator=(const ItemGraphic &) = delete;
+};
 
 /** The 8-bit surface the game renders into (the one to track). */
 void SetTarget(SDL_Surface *palSurface);
