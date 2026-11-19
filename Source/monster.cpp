@@ -226,6 +226,8 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 	monster.uniqueType = UniqueMonsterType::None;
 	monster.activeForTicks = 0;
 	monster.lightId = NO_LIGHT;
+	if (const int radius = hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile); radius > 0)
+		monster.lightId = AddLight(position, radius); // the HD pack's light for this type (burning wings)
 	monster.rndItemSeed = AdvanceRndSeed();
 	monster.aiSeed = AdvanceRndSeed();
 	monster.whoHit = 0;
@@ -1520,6 +1522,10 @@ void MonsterDeath(Monster &monster)
 			AddCorpse(monster.position.tile, monster.corpseId, monster.direction);
 		else
 			AddCorpse(monster.position.tile, monster.type().corpseId, monster.direction);
+		if (!monster.isUnique() && monster.lightId != NO_LIGHT) { // a type light (HD pack) goes out with the corpse
+			AddUnLight(monster.lightId);
+			monster.lightId = NO_LIGHT;
+		}
 
 		dMonster[monster.position.tile.x][monster.position.tile.y] = 0;
 		monster.isInvalid = true;
@@ -3349,6 +3355,8 @@ std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMons
 	monster.reducePlayerMaxMana = uniqueMonsterData.reducePlayerMaxMana;
 	monster.resistance = uniqueMonsterData.mMagicRes;
 	monster.talkMsg = uniqueMonsterData.mtalkmsg;
+	if (monster.lightId != NO_LIGHT)
+		AddUnLight(monster.lightId); // (a type light from the HD pack: the unique's own replaces it)
 	if (monsterType == UniqueMonsterType::HorkDemon)
 		monster.lightId = NO_LIGHT;
 	else
@@ -4024,7 +4032,7 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 			md = Direction::South;
 		NewMonsterAnim(monster, MonsterGraphic::Death, md, gGameLogicStep < GameLogicStep::ProcessMonsters ? AnimationDistributionFlags::ProcessAnimationPending : AnimationDistributionFlags::None);
 		monster.mode = MonsterMode::Death;
-	} else if (monster.isUnique()) {
+	} else if (monster.isUnique() || monster.lightId != NO_LIGHT) {
 		AddUnLight(monster.lightId);
 	}
 	monster.goal = MonsterGoal::None;
