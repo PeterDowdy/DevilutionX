@@ -42,6 +42,7 @@
 #include "engine/point.hpp"
 #include "engine/random.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "engine/render/text_render.hpp"
 #include "engine/surface.hpp"
@@ -2412,6 +2413,18 @@ uint8_t GetOutlineColor(const Item &item, bool checkReq)
 		return ICOL_YELLOW;
 
 	return ICOL_WHITE;
+}
+
+hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped)
+{
+	// A unique item's own art shows once it is identified. One with a picture of its own (UICurs) shows it before: in 1997 the picture is
+	// all the player has, and a unique that shares its base item's picture must not give itself away
+	if (item._iMagical == ITEM_QUALITY_UNIQUE && item._iUid >= 0 && static_cast<size_t>(item._iUid) < UniqueItems.size()) {
+		const UniqueItem &unique = UniqueItems[item._iUid];
+		if (item._iIdentified || unique.UICurs != ICURS_DEFAULT)
+			return hd::ItemGraphic(item._iCurs, dropped, item._iUid, unique.UIName);
+	}
+	return hd::ItemGraphic(item._iCurs, dropped, -1, {});
 }
 
 void ClearUniqueItemFlags()

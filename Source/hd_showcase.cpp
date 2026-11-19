@@ -1,9 +1,11 @@
 #include "hd_showcase.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -13,6 +15,8 @@
 #include "engine/render/hd.hpp"
 #include "engine/render/scrollrt.h"
 #include "interfac.h"
+#include "inv.h"
+#include "cursor.h"
 #include "items.h"
 #include "levels/dun_tile_data.hpp"
 #include "levels/gendung.h"
@@ -99,6 +103,28 @@ int Int(const Command &command, size_t i)
 	return i < command.args.size() ? std::atoi(command.args[i].c_str()) : 0;
 }
 
+/** An item by its name: a unique item's (UniqueItems), else a base item's (AllItemsList); -> whether it was found. */
+bool MakeItem(const std::string &name, bool identified, Item &item)
+{
+	for (size_t u = 0; u < UniqueItems.size(); ++u) {
+		if (UniqueItems[u].UIName != name) continue;
+		Item *spawned = SpawnUnique(static_cast<_unique_items>(u), MyPlayer->position.tile, std::nullopt, false, false);
+		if (spawned == nullptr) return false;
+		item = *spawned; // (the one on the floor is taken away again: the last allocated)
+		dItem[spawned->position.x][spawned->position.y] = 0;
+		DeleteItem(ActiveItemCount - 1);
+		item._iIdentified = identified;
+		return true;
+	}
+	for (size_t i = 0; i < AllItemsList.size(); ++i) {
+		if (AllItemsList[i].iName != name) continue;
+		InitializeItem(item, static_cast<_item_indexes>(i));
+		item._iIdentified = identified;
+		return true;
+	}
+	return false;
+}
+
 } // namespace
 
 bool Active()
@@ -148,6 +174,14 @@ void AfterGameTick()
 		ShowHero = true;
 	} else if (command.verb == "dim") {
 		KeepLight = true;
+	} else if (command.verb == "strip" && !command.args.empty() && command.args[0] == "pack") {
+		for (Item &spot : MyPlayer->InvList)
+			spot.clear();
+		for (Item &spot : MyPlayer->SpdList)
+			spot.clear();
+		std::memset(MyPlayer->InvGrid, 0, sizeof(MyPlayer->InvGrid));
+		MyPlayer->_pNumInv = 0;
+		CalcPlrInv(*MyPlayer, true);
 	} else if (command.verb == "strip") {
 		const std::string what = command.args.empty() ? "" : command.args[0];
 		for (int slot = INVLOC_HEAD; slot < NUM_INVLOC; ++slot) {
@@ -176,6 +210,57 @@ void AfterGameTick()
 		}
 		if (!found) LogError("HD showcase: nothing to equip as '{}' in '{}'", name, command.args[0]);
 		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "put" && command.args.size() >= 2) {
+		// put <where> [id] <name>: an item by its name (a unique's or a base item's) at head/chest/left/right, pack, belt, hold (on the cursor)
+		// or floor:<dx>:<dy> (dropped next to the hero). Unique items are unidentified unless "id" comes first.
+		static const std::pair<const char *, inv_body_loc> Slots[] = { { "head", INVLOC_HEAD }, { "chest", INVLOC_CHEST }, { "left", INVLOC_HAND_LEFT }, { "right", INVLOC_HAND_RIGHT } };
+		size_t first = 1;
+		bool identified = false;
+		if (command.args[first] == "id") {
+			identified = true;
+			++first;
+		}
+		std::string name = command.args[first];
+		for (size_t i = first + 1; i < command.args.size(); ++i)
+			name += " " + command.args[i];
+		Item item;
+		if (!MakeItem(name, identified, item)) {
+			LogError("HD showcase: no item '{}'", name);
+			diablo_quit(1);
+			return;
+		}
+		const std::string &where = command.args[0];
+		bool placed = false;
+		for (const auto &[word, slot] : Slots) {
+			if (where != word) continue;
+			MyPlayer->InvBody[slot] = item;
+			placed = true;
+		}
+		if (where == "pack") {
+			placed = AutoPlaceItemInInventory(*MyPlayer, item);
+		} else if (where == "belt") {
+			for (Item &spot : MyPlayer->SpdList) {
+				if (!spot.isEmpty()) continue;
+				spot = item;
+				placed = true;
+				break;
+			}
+		} else if (where == "hold") {
+			MyPlayer->HoldItem = item;
+			NewCursor(item);
+			placed = true;
+		} else if (where.rfind("floor:", 0) == 0) {
+			int dx = 0, dy = 0;
+			std::sscanf(where.c_str(), "floor:%d:%d", &dx, &dy);
+			PlaceItemInWorld(std::move(item), MyPlayer->position.tile + Displacement { dx, dy });
+			placed = true;
+		}
+		if (!placed) LogError("HD showcase: can't put an item at '{}'", where);
+		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "inv") {
+		invflag = true;
+	} else if (command.verb == "mouse" && command.args.size() >= 2) {
+		MousePosition = { Int(command, 0), Int(command, 1) };
 	} else if (command.verb == "face" && !command.args.empty()) {
 		StartStand(*MyPlayer, static_cast<Direction>(Int(command, 0) & 7));
 	} else if (command.verb == "attack" && !command.args.empty()) {

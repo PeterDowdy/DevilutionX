@@ -28,6 +28,7 @@
 #include "engine/point.hpp"
 #include "engine/points_in_rectangle_range.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "engine/trn.hpp"
 #include "headless_mode.hpp"
@@ -551,6 +552,7 @@ void FreeHalfSizeItemSprites()
 
 void DrawItem(const Item &item, const Surface &out, Point position, ClxSprite clx)
 {
+	const hd::ItemGraphic itemGraphic = HdItemGraphic(item, false); // a unique item's own picture, where the HD pack has it
 	const bool usable = !IsInspectingPlayer() ? item._iStatFlag : InspectPlayer->CanUseItem(item);
 	if (usable) {
 		ClxDraw(out, position, clx);
