@@ -48,6 +48,15 @@
  *                                             cursor graphic, three digits: "items/swrdflip@c057" for the Bastard Sword's) may have
  *                                             art of its own for that animation. Looked for first while the item draws (ItemGraphic);
  *                                             an item without it shows the drop class's art ("items/swrdflip").
+ *   sprite/<mpq path without ext>@c<NNN>~<slug>/<group>.<frame>.png   the art of one unique item, over its item graphic's: the
+ *                                             same <NNN> and the unique item's name in unique_itemdat.tsv in lower case, letters and
+ *                                             digits kept, each run of anything else a "-" ("items/swrdflip@c057~the-butcher-s-cleaver" is
+ *                                             the drop animation, "data/inv/objcurs@c057~the-butcher-s-cleaver/0.68.png" the inventory,
+ *                                             belt, stash, store and cursor picture; <NNN> is the unique's own item graphic, and the
+ *                                             inventory frame number is NNN + 11 as for any item). Looked for first; a unique without it
+ *                                             shows what its item graphic shows. A unique item that shares its base item's picture
+ *                                             shows it only once identified (the 1997 game gives nothing away before); one with a
+ *                                             picture of its own of its own accord.
  *   sprite/<mpq path without ext>@hf/<group>.<frame>.png   a menu PCX that a Hellfire archive supplies under Diablo's path
  *                                             (ui_art/heros: Hellfire adds the monk as frame 3, Diablo's new hero): Hellfire's
  *                                             art only, it never falls back to the plain path's (Diablo's) art.
@@ -227,6 +236,13 @@ void ForgetOffscreen(SDL_Surface *buffer);
 class ItemGraphic {
 public:
 	explicit ItemGraphic(int cursorGraphic);
+	/**
+	 * An item drawn in the game world (``dropped``) or as an inventory picture. For a unique item whose own art may show, ``uniqueIndex``
+	 * (its place in the unique item table, a cache key) and ``uniqueName`` (the table's English name): a frame looks for that unique's art
+	 * ("@c<NNN>~<slug>") before all else. A pack without any of it costs nothing here. An inventory picture is the sprite's own frame, so
+	 * only the unique's art is looked for then, not the item graphic's.
+	 */
+	ItemGraphic(int cursorGraphic, bool dropped, int uniqueIndex, std::string_view uniqueName);
 	~ItemGraphic();
 	ItemGraphic(const ItemGraphic &) = delete;
 	ItemGraphic &operator=(const ItemGraphic &) = delete;

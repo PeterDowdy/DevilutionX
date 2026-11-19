@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -78,6 +79,9 @@ struct SpriteEntry {
 	bool pending = false;          ///< between BeforeRecolour and AfterRecolour
 	std::vector<uint8_t> original; ///< pixel data before ClxApplyTrans, when its own art is graded through it
 	std::array<uint8_t, 256> trn;
+	mutable const void *uniqueFor = nullptr; ///< the last unique item's art (UniqueItemArt) looked for, and what it found (ItemGraphic scopes)
+	mutable uint32_t uniqueGeneration = 0;
+	mutable uint32_t uniqueImage = 0;
 
 	/** The pack file of this frame in a swap ("bluered", "bluered+rcrn", "+eth", "+general~moonbender"), or itself for none. */
 	[[nodiscard]] std::string Key(std::string_view swap) const
@@ -106,6 +110,17 @@ std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
 thread_local std::string ItemArt; ///< "c057" while an ItemGraphic lives: the dropped item's own art is looked for first
+
+/** One unique item's art: the pack file name it is under, worked out when the item is first drawn (and again if its table entry changed). */
+struct UniqueItemArt {
+	int cursor = -1;
+	std::string source;  ///< the table name it was worked out from
+	std::string name;    ///< "c057~the-butcher-s-cleaver"; empty when the pack has no art of this unique's own
+};
+std::unordered_set<std::string> ItemUniqueNames; ///< the "c<NNN>~<slug>" names the pack has art under
+std::deque<UniqueItemArt> ItemUniqueArts;        ///< by unique item index (stable addresses)
+uint32_t ItemUniqueGeneration = 1;               ///< changes whenever one of them is worked out again
+thread_local const UniqueItemArt *ItemUnique = nullptr; ///< the unique item's art while an ItemGraphic for it lives
 
 /** "shading pixel" in hd.txt: every pixel graded on its own, as before the shading was reworked (see the top of hd.hpp). */
 bool PixelShading = false;
@@ -1412,11 +1427,15 @@ void Init()
 	}
 	Scale = std::clamp(Scale, 1, 8);
 	Images.reserve(Manifest.size() + 1);
+	ItemUniqueNames.clear();
+	ItemUniqueArts.clear();
+	++ItemUniqueGeneration;
 	for (const auto &[file, palette] : Manifest) {
 		if (file.rfind("sprite/", 0) != 0) continue;
 		std::string stem = file.substr(0, file.rfind('/'));
 		const size_t swap = stem.find('@', stem.rfind('/'));
 		if (swap != std::string::npos) {
+			if (stem.size() > swap + 6 && stem[swap + 1] == 'c' && stem[swap + 5] == '~') ItemUniqueNames.insert(stem.substr(swap + 1)); // "@c057~<slug>"
 			ArtStems.insert(stem); // files registered under an "@" name of their own: Hellfire's menu files ("ui_art/heros@hf", load_pcx.cpp)
 			stem.resize(swap);
 		}
@@ -1514,16 +1533,33 @@ void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner)
 }
 
 ItemGraphic::ItemGraphic(int cursorGraphic)
+    : ItemGraphic(cursorGraphic, true, -1, {})
+{
+}
+
+ItemGraphic::ItemGraphic(int cursorGraphic, bool dropped, int uniqueIndex, std::string_view uniqueName)
 {
 	if (!Active || cursorGraphic < 0) return;
 	char name[16];
 	std::snprintf(name, sizeof(name), "c%03d", cursorGraphic);
-	ItemArt = name;
+	if (dropped) ItemArt = name;
+	if (ItemUniqueNames.empty() || uniqueIndex < 0 || uniqueIndex >= 4096 || uniqueName.empty()) return;
+	if (ItemUniqueArts.size() <= static_cast<size_t>(uniqueIndex)) ItemUniqueArts.resize(uniqueIndex + 1);
+	UniqueItemArt &art = ItemUniqueArts[uniqueIndex];
+	if (art.cursor != cursorGraphic || art.source != uniqueName) {
+		art.cursor = cursorGraphic;
+		art.source = uniqueName;
+		art.name = std::string(name) + "~" + NameSlug(uniqueName);
+		if (ItemUniqueNames.count(art.name) == 0) art.name.clear();
+		++ItemUniqueGeneration;
+	}
+	if (!art.name.empty()) ItemUnique = &art;
 }
 
 ItemGraphic::~ItemGraphic()
 {
 	ItemArt.clear();
+	ItemUnique = nullptr;
 }
 
 void SetTarget(SDL_Surface *palSurface)
@@ -1587,9 +1623,17 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
 			const SpriteEntry &entry = found->second;
 			drawn = &entry;
-			// The most specific art the pack has: a dropped item graphic's own, the one monster's the draw's TRN belongs to, the draw's own
-			// swap on top of the sprite's (art that every monster with that TRN shares), the sprite's swap, itself
-			if (!ItemArt.empty() && entry.recolour.empty())
+			// The most specific art the pack has: a unique item's own, a dropped item graphic's own, the one monster's the draw's TRN belongs
+			// to, the draw's own swap on top of the sprite's (art that every monster with that TRN shares), the sprite's swap, itself
+			if (ItemUnique != nullptr && entry.recolour.empty()) {
+				if (entry.uniqueFor != ItemUnique || entry.uniqueGeneration != ItemUniqueGeneration) { // (looked up once for each frame and unique)
+					entry.uniqueImage = ImageId(entry.Key(ItemUnique->name), clx.width(), clx.height());
+					entry.uniqueFor = ItemUnique;
+					entry.uniqueGeneration = ItemUniqueGeneration;
+				}
+				image = entry.uniqueImage;
+			}
+			if (image == 0 && !ItemArt.empty() && entry.recolour.empty())
 				image = ImageId(entry.Key(ItemArt), clx.width(), clx.height());
 			if (const NamedTrn *unique = image == 0 ? TrnNamed(drawTrn) : nullptr; unique != nullptr) {
 				if (!unique->own.empty())

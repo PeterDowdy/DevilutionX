@@ -22,6 +22,10 @@
 
 namespace devilution {
 
+namespace hd {
+class ItemGraphic;
+}
+
 #define MAXITEMS 127
 #define ITEMTYPES 43
 
@@ -494,6 +498,11 @@ extern CornerStoneStruct CornerStone;
 extern DVL_API_FOR_TEST bool UniqueItemFlags[128];
 
 uint8_t GetOutlineColor(const Item &item, bool checkReq);
+/**
+ * @brief The HD layer's scope for drawing an item: its item graphic's art, and for a unique item its own art (see hd.hpp)
+ * @param dropped true when the item lies in the world, false for an inventory picture
+ */
+hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped);
 bool IsItemAvailable(int i);
 void ClearUniqueItemFlags();
 void InitItemGFX();

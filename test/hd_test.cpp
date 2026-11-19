@@ -1270,5 +1270,84 @@ TEST(HdTest, DroppedItemsDrawTheArtOfTheirOwnItemGraphic)
 	fs::remove_all(pack);
 }
 
+TEST(HdTest, AUniqueItemCanHaveArtOfItsOwn)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_unique_items";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/items/uniqflip@c057/0.0.png", { 60, 120, 60 }, index);                               // the Bastard Sword's
+		WriteArt(pack, "sprite/items/uniqflip@c057~the-butcher-s-cleaver/0.0.png", { 60, 60, 120 }, index);        // one unique's with that picture
+		WriteArt(pack, "sprite/data/inv/objcurs@c057~the-butcher-s-cleaver/0.0.png", { 120, 120, 60 }, index);     // the same unique's inventory picture
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+
+	std::vector<uint8_t> sword = Sprite();
+	std::vector<uint8_t> picture = Sprite();
+	hd::RegisterSpriteList("Items\\Uniqflip.CEL", 0, ClxSpriteList { sword.data() });
+	hd::RegisterSpriteList("Data\\Inv\\Objcurs.CEL", 0, ClxSpriteList { picture.data() });
+	const std::string_view cleaver = "The Butcher's Cleaver";
+	{
+		const hd::ItemGraphic scope(57, true, 5, cleaver); // the unique on the floor
+		ClxDraw(out, { 0, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(57, true, 6, "A Unique Without Art"); // another unique with that picture: the picture's art
+		ClxDraw(out, { 8, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(57, true, -1, {}); // a plain item: the picture's art
+		ClxDraw(out, { 16, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(58, true, 5, cleaver); // the table entry changed under the same index: no art of its own
+		ClxDraw(out, { 24, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(57, false, 5, cleaver); // the unique's inventory picture
+		ClxDraw(out, { 32, 3 }, ClxSpriteList { picture.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(57, false, -1, {}); // a plain item's: no art for the picture here, the original pixels
+		ClxDraw(out, { 40, 3 }, ClxSpriteList { picture.data() }[0]);
+	}
+	{
+		const hd::ItemGraphic scope(57, true, 5, cleaver); // drawn again: what was looked up before
+		ClxDraw(out, { 48, 3 }, ClxSpriteList { sword.data() }[0]);
+	}
+	hd::Present(nullptr, pal);
+
+	SDL_Surface *argb = LoadFrame(dump);
+	ASSERT_NE(argb, nullptr);
+	ExpectColor(At(argb, 2, 2), 60, 60, 120, "the unique on the floor: its own art");
+	ExpectColor(At(argb, 18, 2), 60, 120, 60, "another unique: its picture's art");
+	ExpectColor(At(argb, 34, 2), 60, 120, 60, "a plain item: its picture's art");
+	ExpectColor(At(argb, 50, 2), 200, 50, 50, "another picture: the original pixels");
+	ExpectColor(At(argb, 66, 2), 120, 120, 60, "the unique in the inventory: its own art");
+	ExpectColor(At(argb, 82, 2), 200, 50, 50, "a plain item in the inventory: the original pixels");
+	ExpectColor(At(argb, 98, 2), 60, 60, 120, "the unique again");
+	SDL_FreeSurface(argb);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 } // namespace
 } // namespace devilution
