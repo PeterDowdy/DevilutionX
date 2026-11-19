@@ -23,6 +23,7 @@
 #include "dead.h"
 #include "doom.h"
 #include "engine/point.hpp"
+#include "engine/render/hd.hpp"
 #include "engine/random.hpp"
 #include "game_mode.hpp"
 #include "inv.h"
@@ -802,7 +803,7 @@ void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &remo
 			continue;
 		}
 
-		if (applyLight && monster.isUnique() && monster.lightId != NO_LIGHT)
+		if (applyLight && monster.lightId != NO_LIGHT && (monster.isUnique() || hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile) > 0))
 			Lights[monster.lightId].isInvalid = false;
 
 		i++;

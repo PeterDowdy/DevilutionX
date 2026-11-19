@@ -100,6 +100,7 @@ bool Active = false;
 std::string PackDir;
 int Scale = 4;
 std::unordered_map<std::string, std::string> Manifest; ///< image file -> palette file
+std::unordered_map<std::string, int> MonsterLights;   ///< "monsters/<path>[@<trn>]" -> light radius ("light" lines of hd.txt)
 std::vector<HdImage> Images(1);                         ///< id 0: none; reserved for the whole manifest when the pack loads, so it never
                                                         ///< reallocates while Compose reads it (the level loader thread adds images)
 std::mutex ImagesMutex;                                 ///< ImageId: the main and the loader thread look up / add images
@@ -1377,6 +1378,20 @@ bool Enabled()
 	return Active;
 }
 
+int MonsterLight(std::string_view spritePath, std::string_view trnFile)
+{
+	if (!Active || MonsterLights.empty() || spritePath.empty()) return 0;
+	std::string body = "monsters/";
+	for (const char c : spritePath)
+		body += c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	if (!trnFile.empty()) {
+		const auto own = MonsterLights.find(body + "@" + TrnStem(trnFile));
+		if (own != MonsterLights.end()) return own->second;
+	}
+	const auto it = MonsterLights.find(body);
+	return it != MonsterLights.end() ? it->second : 0;
+}
+
 int PackScale()
 {
 	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
@@ -1405,6 +1420,7 @@ void Init()
 	std::string line;
 	FreeSilhouette = false;
 	PixelShading = false;
+	MonsterLights.clear();
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
 		std::string kind;
@@ -1423,6 +1439,10 @@ void Init()
 			std::string file, palette;
 			words >> file >> palette;
 			Manifest[file] = palette == "-" ? "" : palette;
+		} else if (kind == "light") {
+			std::string who;
+			int radius = 0;
+			if (words >> who >> radius && radius > 0) MonsterLights[who] = std::min(radius, 15);
 		}
 	}
 	Scale = std::clamp(Scale, 1, 8);

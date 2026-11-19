@@ -196,6 +196,13 @@ void Init();
 /** The pack's scale ("scale N" in its hd.txt), read without loading it; 1 when there is no pack. For sizing the window before Init. */
 int PackScale();
 
+/**
+ * The light radius a monster type carries in this pack ("light monsters/<sprite path>[@<trn>] <radius>" in hd.txt; e.g. a creature
+ * with burning wings): 0 when the pack names none. ``spritePath`` is monstdat's assetsSuffix ("mega\mega"), ``trnFile`` its TRN
+ * ("mega\balr", or empty): the swap's own line first, then the body's.
+ */
+int MonsterLight(std::string_view spritePath, std::string_view trnFile);
+
 /** Remembers which file, group and frame each sprite of a freshly loaded CEL/CL2 file is. ``path`` may carry an extension. */
 void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites);
 void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list);
