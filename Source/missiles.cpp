@@ -1336,6 +1336,7 @@ void AddBerserk(Missile &missile, AddMissileParameter &parameter)
 		monster.minDamageSpecial = (GenerateRnd(10) + 120) * monster.minDamageSpecial / 100 + slvl;
 		monster.maxDamageSpecial = (GenerateRnd(10) + 120) * monster.maxDamageSpecial / 100 + slvl;
 		const int lightRadius = leveltype == DTYPE_NEST ? 9 : 3;
+		AddUnLight(monster.lightId); // (a type light of the HD pack: the Berserk light takes its place)
 		monster.lightId = AddLight(monster.position.tile, lightRadius);
 		parameter.spellFizzled = false;
 	}

@@ -877,6 +877,10 @@ void DeltaLoadMonsters(const DLevel &deltaLevel)
 			continue;
 
 		M_ClearSquares(monster);
+		if (!monster.isUnique() && monster.lightId != NO_LIGHT) { // a type light (HD pack) goes out with the corpse
+			AddUnLight(monster.lightId);
+			monster.lightId = NO_LIGHT;
+		}
 		if (monster.ai != MonsterAIID::Diablo) {
 			if (monster.isUnique()) {
 				AddCorpse(monster.position.tile, monster.corpseId, monster.direction);

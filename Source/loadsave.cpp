@@ -23,7 +23,6 @@
 #include "dead.h"
 #include "doom.h"
 #include "engine/point.hpp"
-#include "engine/render/hd.hpp"
 #include "engine/random.hpp"
 #include "game_mode.hpp"
 #include "inv.h"
@@ -803,7 +802,7 @@ void LoadMonsters(LoadHelper &file, ankerl::unordered_dense::set<unsigned> &remo
 			continue;
 		}
 
-		if (applyLight && monster.lightId != NO_LIGHT && (monster.isUnique() || hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile) > 0))
+		if (applyLight && monster.isUnique() && monster.lightId != NO_LIGHT)
 			Lights[monster.lightId].isInvalid = false;
 
 		i++;
@@ -2024,6 +2023,10 @@ std::expected<void, std::string> LoadLevel(LevelConversionData *levelConversionD
 		}
 		MoveLightsToCorpses();
 	}
+	// The HD pack's type lights: the level was just made with a light for every monster of a lit type, the save's monsters take them over
+	std::vector<int> typeLights;
+	if (leveltype != DTYPE_TOWN && levelConversionData == nullptr)
+		typeLights = TakeTypeLights();
 
 	ActiveMonsterCount = file.NextBE<int32_t>();
 	auto savedItemCount = file.NextBE<uint32_t>();
@@ -2033,6 +2036,8 @@ std::expected<void, std::string> LoadLevel(LevelConversionData *levelConversionD
 
 	if (leveltype != DTYPE_TOWN) {
 		LoadMonsters(file, removedMonsterIds, true, levelConversionData);
+		if (levelConversionData == nullptr)
+			GiveTypeLights(typeLights);
 
 		if (!gbSkipSync) {
 			for (size_t i = 0; i < ActiveMonsterCount; i++)
