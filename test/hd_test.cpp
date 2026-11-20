@@ -1211,6 +1211,22 @@ TEST(HdTest, TheMinimumBrightnessFadesOutAtTheEdgeOfTheLight)
 	SDL_FreeSurface(frame);
 }
 
+TEST(HdTest, TheMinimumBrightnessLeavesARecolouredMonsterAlone)
+{
+	// A TRN that isn't a light table (Infravision, Stone Curse, a unique's colours) is a recolour, not dim light: the minimum doesn't apply
+	std::array<uint8_t, 256> recolour {};
+	SDL_Surface *plain = DrawShadingScenario("minbrightrecolourplain", "", recolour.data(), false);
+	ASSERT_NE(plain, nullptr);
+	const SDL_Color left = At(plain, 9, 4);
+	const SDL_Color right = At(plain, 22, 4);
+	SDL_FreeSurface(plain);
+	SDL_Surface *frame = DrawShadingScenario("minbrightrecolour", "minbright a 0.25\n", recolour.data(), false);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), left.r, left.g, left.b, "as without the minimum");
+	ExpectColor(At(frame, 22, 4), right.r, right.g, right.b, "as without the minimum, both halves alike");
+	SDL_FreeSurface(frame);
+}
+
 TEST(HdTest, ARecolourKeepsItsRegions)
 {
 	// Through a TRN that isn't a light table only Own changes: the left edge takes the recolour, the right edge keeps its colour
