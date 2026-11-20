@@ -194,6 +194,38 @@ void InitMonsterTRN(CMonster &monst)
 	}
 }
 
+/**
+ * Gives a monster of a lit type (hd.txt "light" lines of the HD pack: burning wings) its light, while the pool has room:
+ * the pool (MAXLIGHTS) is shared with the players', the uniques' and the spells' lights, so a big pack of them leaves
+ * the rest without. Never light 0: saves read a monster's light 0 as none (old saves wrote 0 for monsters without
+ * one), which would leave the light behind on the next load.
+ */
+void AddTypeLight(Monster &monster)
+{
+	const int radius = hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile);
+	if (radius <= 0 || ActiveLightCount >= MAXLIGHTS - TypeLightsKeptFree)
+		return;
+	int lightId = AddLight(monster.position.tile, static_cast<uint8_t>(radius));
+	if (lightId == 0) {
+		lightId = AddLight(monster.position.tile, static_cast<uint8_t>(radius));
+		AddUnLight(0);
+	}
+	monster.lightId = lightId;
+}
+
+/**
+ * The type lights of the monsters a level starts with. After every unique has its own light, so that a unique's light
+ * is the same one with and without the pack: a level that is loaded again counts on that (LoadMonsters).
+ */
+void AddTypeLights()
+{
+	for (size_t i = 0; i < ActiveMonsterCount; i++) {
+		Monster &monster = Monsters[ActiveMonsters[i]];
+		if (!monster.isUnique() && monster.lightId == NO_LIGHT)
+			AddTypeLight(monster);
+	}
+}
+
 void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point position)
 {
 	monster.direction = rd;
@@ -226,8 +258,6 @@ void InitMonster(Monster &monster, Direction rd, size_t typeIndex, Point positio
 	monster.uniqueType = UniqueMonsterType::None;
 	monster.activeForTicks = 0;
 	monster.lightId = NO_LIGHT;
-	if (const int radius = hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile); radius > 0)
-		monster.lightId = AddLight(position, radius); // the HD pack's light for this type (burning wings)
 	monster.rndItemSeed = AdvanceRndSeed();
 	monster.aiSeed = AdvanceRndSeed();
 	monster.whoHit = 0;
@@ -3294,6 +3324,44 @@ bool PosOkMovingMissile(Point position)
 
 } // namespace
 
+std::vector<int> TakeTypeLights()
+{
+	std::vector<int> lights;
+	for (size_t i = 0; i < ActiveMonsterCount; i++) {
+		Monster &monster = Monsters[ActiveMonsters[i]];
+		if (monster.isUnique() || monster.lightId == NO_LIGHT)
+			continue;
+		const auto end = ActiveLights.begin() + ActiveLightCount;
+		if (std::find(ActiveLights.begin(), end, monster.lightId) != end && !Lights[monster.lightId].isInvalid)
+			lights.push_back(monster.lightId);
+		monster.lightId = NO_LIGHT;
+	}
+	return lights;
+}
+
+void GiveTypeLights(const std::vector<int> &lights)
+{
+	size_t taken = 0;
+	for (size_t i = 0; i < ActiveMonsterCount; i++) {
+		Monster &monster = Monsters[ActiveMonsters[i]];
+		if (monster.isUnique() || (monster.flags & MFLAG_BERSERK) != 0)
+			continue; // their own lights: LoadMonsters, UpdateMonsterLights
+		monster.lightId = NO_LIGHT; // (what the save names is a light of the last visit)
+		const int radius = hd::MonsterLight(monster.data().spritePath(), monster.data().trnFile);
+		if (radius <= 0)
+			continue;
+		if (taken == lights.size()) {
+			AddTypeLight(monster);
+			continue;
+		}
+		monster.lightId = lights[taken++];
+		ChangeLightRadius(monster.lightId, static_cast<uint8_t>(radius));
+		ChangeLightXY(monster.lightId, monster.position.tile);
+	}
+	for (; taken < lights.size(); taken++)
+		AddUnLight(lights[taken]);
+}
+
 std::expected<size_t, std::string> AddMonsterType(_monster_id type, placeflag placeflag)
 {
 	const size_t typeIndex = GetMonsterTypeIndex(type);
@@ -3760,6 +3828,7 @@ std::expected<void, std::string> InitMonsters()
 				DoUnVision(trigs[i].position + Displacement { s, t }, 15);
 		}
 	}
+	AddTypeLights();
 
 	return InitAllMonsterGFX();
 }
@@ -3799,6 +3868,7 @@ Monster *AddMonster(Point position, Direction dir, size_t typeIndex, bool inMap)
 		if (inMap)
 			monster.occupyTile(position, false);
 		InitMonster(monster, dir, typeIndex, position);
+		AddTypeLight(monster);
 		return &monster;
 	}
 
@@ -3830,6 +3900,7 @@ void LoadDeltaSpawnedMonster(size_t typeIndex, size_t monsterId, uint32_t seed, 
 	Monster &monster = Monsters[monsterId];
 	M_ClearSquares(monster);
 	InitMonster(monster, Direction::South, typeIndex, position);
+	AddTypeLight(monster);
 	if (monster.type().type == MT_GOLEM) {
 		InitGolem(monster, golemOwnerPlayerId, golemSpellLevel);
 	}
@@ -3857,6 +3928,7 @@ void InitializeSpawnedMonster(Point position, Direction dir, size_t typeIndex, s
 
 	monster.occupyTile(position, false);
 	InitMonster(monster, dir, typeIndex, position);
+	AddTypeLight(monster);
 
 	if (monster.type().type == MT_GOLEM) {
 		InitGolem(monster, golemOwnerPlayerId, golemSpellLevel);
@@ -4034,6 +4106,8 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 		monster.mode = MonsterMode::Death;
 	} else if (monster.isUnique() || monster.lightId != NO_LIGHT) {
 		AddUnLight(monster.lightId);
+		if (!monster.isUnique())
+			monster.lightId = NO_LIGHT; // (a type light, or a Berserk light: DeleteMonster would put it out again, and by then it can be another's)
 	}
 	monster.goal = MonsterGoal::None;
 	monster.var1 = 0;

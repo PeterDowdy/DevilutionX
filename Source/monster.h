@@ -12,6 +12,7 @@
 #include <array>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include <function_ref.hpp>
 
@@ -498,6 +499,18 @@ extern int MonsterKillCounts[NUM_MAX_MTYPES];
 extern bool sgbSaveSoundOn;
 
 std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMonsterType monsterType, size_t miniontype, int bosspacksize, const UniqueMonsterData &uniqueMonsterData);
+/** Lights the HD pack's type lights (hd.txt "light" lines) leave free in the pool for the players', the uniques' and the spells'. */
+constexpr int TypeLightsKeptFree = 12;
+/**
+ * @brief Takes the type lights (HD pack) from the monsters a level was just made with. For a level that is loaded
+ * again: the monsters of the save take their place and are given these lights (GiveTypeLights).
+ */
+std::vector<int> TakeTypeLights();
+/**
+ * @brief Gives the loaded monsters of lit types a light each, from those TakeTypeLights took, and puts out the rest
+ * (monsters that have died since). What the save names as their light is not used: it is a light of the last visit.
+ */
+void GiveTypeLights(const std::vector<int> &lights);
 void InitLevelMonsters();
 std::expected<void, std::string> GetLevelMTypes();
 std::expected<size_t, std::string> AddMonsterType(_monster_id type, placeflag placeflag);
