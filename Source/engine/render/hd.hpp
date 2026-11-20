@@ -28,6 +28,9 @@
  *   - a sum lit to black grades to black (the per-pixel grade read a factor of 0 as "add the offset", so art lit to black kept most of
  *     its colour);
  *   - "shading pixel" in hd.txt keeps the old per-pixel grade everywhere.
+ *   - "minbright a <0..1>" in hd.txt (or DEVILUTIONX_HD_MINBRIGHT="a:<0..1>") keeps monsters readable in dim light: after the grade, no channel
+ *     of a monster's art is darker than its own unlit value times that strength. It fades out over light levels 12-15, so a monster lit to
+ *     black stays black. Off without the line.
  *
  * Pack layout (a folder, given by DEVILUTIONX_HD_PACK):
  *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line, and optionally
