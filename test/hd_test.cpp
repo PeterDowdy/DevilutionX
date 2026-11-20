@@ -1057,11 +1057,11 @@ std::vector<uint8_t> TwoToneSprite()
 
 /**
  * Draws the two-tone sprite (lo pixels x 4..11, y 1..4 of a surface 6 high) through ``trn`` (none: ClxDraw), with flat art ``FrontArt``,
- * in a pack with ``extra`` lines; ``lightTable``: ``trn`` is one of the game's light tables. ``between`` runs after the draw, before the
- * frame is presented. Returns the HD frame (scale 2).
+ * in a pack with ``extra`` lines; ``lightTable``: ``trn`` is one of the game's light tables (the one of light level ``level``). ``between``
+ * runs after the draw, before the frame is presented. Returns the HD frame (scale 2).
  */
 SDL_Surface *DrawShadingScenario(const std::string &name, const std::string &extra, const uint8_t *trn, bool lightTable,
-    const std::function<void(SDL_Surface *, const Surface &)> &between = {})
+    const std::function<void(SDL_Surface *, const Surface &)> &between = {}, int level = 0)
 {
 	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
 	const fs::path dump = pack / "dump";
@@ -1088,7 +1088,15 @@ SDL_Surface *DrawShadingScenario(const std::string &name, const std::string &ext
 	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
 	hd::Init();
 	EXPECT_TRUE(hd::Enabled());
-	hd::SetLightTables(lightTable ? trn : nullptr, lightTable ? 256 : 0);
+	static std::vector<uint8_t> tables;
+	if (lightTable && level > 0) {
+		tables.assign(16 * 256, 0);
+		std::copy_n(trn, 256, tables.begin() + level * 256);
+		trn = tables.data() + level * 256;
+		hd::SetLightTables(tables.data(), tables.size());
+	} else {
+		hd::SetLightTables(lightTable ? trn : nullptr, lightTable ? 256 : 0);
+	}
 
 	// Not the size of any other test's surface (nor of this scenario's other calls), so that the provenance plane starts clean
 	static int calls = 0;
@@ -1166,6 +1174,40 @@ TEST(HdTest, ASpriteLitToBlackIsBlack)
 	ASSERT_NE(frame, nullptr);
 	ExpectColor(At(frame, 9, 4), 0, 0, 0, "lit to black");
 	ExpectColor(At(frame, 22, 4), 0, 0, 0, "lit to black");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, AMonsterInDimLightKeepsAMinimumBrightnessWhenThePackAsks)
+{
+	// "minbright a 0.25": no channel of a monster's art is darker than a quarter of its own, so art lit to black keeps a quarter of its colour
+	std::array<uint8_t, 256> dark {};
+	SDL_Surface *frame = DrawShadingScenario("minbright", "minbright a 0.25\n", dark.data(), true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), FrontArt.r / 4, FrontArt.g / 4, FrontArt.b / 4, "a quarter of the art");
+	ExpectColor(At(frame, 22, 4), FrontArt.r / 4, FrontArt.g / 4, FrontArt.b / 4, "a quarter of the art, both halves alike");
+	SDL_FreeSurface(frame);
+
+	// Art that the light leaves brighter than that is as it was
+	std::array<uint8_t, 256> dim = Identity();
+	dim[Own] = OwnDim;
+	dim[Other] = OtherDim;
+	frame = DrawShadingScenario("minbrightdim", "minbright a 0.25\n", dim.data(), true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), FrontArt.r - 40, FrontArt.g - 40, FrontArt.b - 40, "40 darker, above the minimum");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, TheMinimumBrightnessFadesOutAtTheEdgeOfTheLight)
+{
+	// Full up to light level 11, then 3/4, 1/2, 1/4, and nothing at 15: what the game draws black at the edge of the light stays black
+	std::array<uint8_t, 256> dark {};
+	SDL_Surface *frame = DrawShadingScenario("minbrighthalf", "minbright a 0.25\n", dark.data(), true, {}, 13);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), 15, 7, 7, "half of the minimum at level 13 (0.25 x 127/255 of the art)");
+	SDL_FreeSurface(frame);
+	frame = DrawShadingScenario("minbrightedge", "minbright a 0.25\n", dark.data(), true, {}, 15);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 9, 4), 0, 0, 0, "black at level 15");
 	SDL_FreeSurface(frame);
 }
 

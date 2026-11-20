@@ -59,6 +59,7 @@ struct HdImage {
 	uint32_t palette = 0; ///< which reference palette (PaletteKeys): pillars are graded by light level and palette
 	bool world = false;   ///< art of the game world (monsters, heroes, towners, items, objects, missiles, levels), not of the panels and menus
 	bool figure = false;  ///< a monster's, hero's or towner's art (OverEarlierFigure)
+	bool monster = false; ///< a monster's art (MinBright)
 	std::vector<uint8_t> reach; ///< per original pixel: the art is opaque somewhere in its block (free silhouettes; made when first needed)
 	uint32_t fx = 0;            ///< a sprite frame's effect layer ("fx/..."), an image of its own; looked up when the frame is first drawn into the game view
 	bool fxLooked = false;
@@ -135,6 +136,23 @@ constexpr int LocalRadius = 2;
 /** SetLightTables */
 const uint8_t *LightTablesBegin = nullptr;
 const uint8_t *LightTablesEnd = nullptr;
+
+/**
+ * A minimum brightness for monsters in dim light (off unless the pack asks for it, and then only monsters' art is touched): the hd.txt line
+ * "minbright a 0.20", or DEVILUTIONX_HD_MINBRIGHT="a:0.20" (the variable wins). After the grade of a monster's pixel, each channel is no darker than
+ * the art's own (unlit) channel times the strength (0..1), so the art keeps its contrast and its colours, and a monster with dark art stays darker
+ * than one with pale art. ("a" names the rule; anything else is off.)
+ * The strength fades out with the light level the draw was lit with: full up to level 11, then 3/4, 1/2, 1/4, and none at 15 (the game draws it black),
+ * so a monster at the edge of the light stays as black as it is. The game itself hides monsters on unlit tiles (IsTileLit), so nothing new is ever drawn.
+ */
+float MinBright = 0;
+std::unordered_map<uint32_t, uint8_t> DrawLights; ///< by draw serial, how much of MinBright applies (0..255) to the monsters' draws of this frame
+
+uint8_t FloorWeightOfLevel(uint8_t level)
+{
+	if (level == 255 || level <= 11) return 255;
+	return level >= 15 ? 0 : static_cast<uint8_t>(255 - (level - 11) * 64);
+}
 /** Reference palette file -> HdImage::palette (under ImagesMutex), and how many there are. */
 std::unordered_map<std::string, uint32_t> PaletteKeys;
 std::atomic<uint32_t> PaletteCount { 0 };
@@ -333,6 +351,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 				img.world = img.world || file.rfind(world, 0) == 0;
 			for (const char *figure : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/" })
 				img.figure = img.figure || file.rfind(figure, 0) == 0;
+			img.monster = file.rfind("sprite/monsters/", 0) == 0;
 			if (file.compare(0, 7, "sprite/") == 0) ReadBox(file, img);
 			Images.push_back(std::move(img));
 			id = static_cast<uint32_t>(Images.size() - 1);
@@ -1138,6 +1157,29 @@ const Grade *GradeOf(const PixelProvenance &p, const PixelProvenance *plane, con
 	return &scratch;
 }
 
+/** The minimum brightness (MinBright) on a graded monster pixel: each channel no darker than the art's (``ar``...) times ``factor``. */
+void ApplyFloor(float factor, uint32_t ar, uint32_t ag, uint32_t ab, uint32_t &r, uint32_t &g, uint32_t &b)
+{
+	r = std::max(r, static_cast<uint32_t>(ar * factor + 0.5F));
+	g = std::max(g, static_cast<uint32_t>(ag * factor + 0.5F));
+	b = std::max(b, static_cast<uint32_t>(ab * factor + 0.5F));
+}
+
+/** The factor of the floor for the monster draw ``p`` is part of (0 for anything else, and always without MinBright); ``last`` caches the last draw. */
+struct FloorCache {
+	uint32_t serial = 0;
+	float factor = 0;
+};
+float FloorFactorOf(const PixelProvenance &p, FloorCache &last)
+{
+	if (MinBright <= 0 || !Images[p.image].monster) return 0;
+	if (last.serial != p.serial) {
+		const auto found = DrawLights.find(p.serial);
+		last = { p.serial, found != DrawLights.end() ? MinBright * (found->second / 255.0F) : 0 };
+	}
+	return last.factor;
+}
+
 void FillBlock(uint32_t *dst, int outW, int n, uint32_t color)
 {
 	for (int j = 0; j < n; ++j)
@@ -1149,7 +1191,8 @@ void FillBlock(uint32_t *dst, int outW, int n, uint32_t color)
  * by ``grade`` (GradeOf; null: as it is). Where the art is not opaque it blends over ``under`` (n x n, packed) or, without it, over ``c``.
  * False when the pixel is outside the art.
  */
-bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL_Color c, const Grade *grade, uint32_t *dst, int outW, const uint32_t *under)
+bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL_Color c, const Grade *grade, uint32_t *dst, int outW, const uint32_t *under,
+    float floorFactor = 0)
 {
 	const int n = Scale;
 	const int sx = x - p.left;
@@ -1167,9 +1210,11 @@ bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL
 			const uint32_t a = s >> 24;
 			uint32_t r = (s >> 16) & 0xFF, g = (s >> 8) & 0xFF, b = s & 0xFF;
 			if (grade != nullptr) {
+				const uint32_t artR = r, artG = g, artB = b;
 				r = grade->r.apply(r);
 				g = grade->g.apply(g);
 				b = grade->b.apply(b);
+				if (floorFactor > 0) ApplyFloor(floorFactor, artR, artG, artB, r, g, b);
 			}
 			if (a < 255) {
 				uint32_t br = c.r, bg = c.g, bb = c.b;
@@ -1200,6 +1245,7 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 	const bool haveBehind = havePlane && BehindProv.size() == Plane.size();
 	Grade scratch, behindScratch;
 	GradeCache cache, behindCache;
+	FloorCache floorCache, behindFloorCache;
 	for (int y = y0; y < y1; ++y) {
 		for (int x = 0; x < w; ++x) {
 			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
@@ -1221,13 +1267,13 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 				const PixelProvenance &bp = BehindProv[at];
 				const HdImage *behindImg = bp.image != 0 && bp.written == behind && !Stale(bp, x, y) ? &Images[bp.image] : nullptr;
 				if (behindImg == nullptr || behindImg->w == 0
-				    || !SampleBlock(*behindImg, bp, x, y, bc, GradeOf(bp, BehindProv.data(), BehindIdx.data(), pal->pitch, w, pal->h, x, y, live, behindScratch, behindCache), under, n, nullptr))
+				    || !SampleBlock(*behindImg, bp, x, y, bc, GradeOf(bp, BehindProv.data(), BehindIdx.data(), pal->pitch, w, pal->h, x, y, live, behindScratch, behindCache), under, n, nullptr, FloorFactorOf(bp, behindFloorCache)))
 					FillBlock(under, n, n, 0xFF000000U | (bc.r << 16) | (bc.g << 8) | bc.b);
-				if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, under))
+				if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, under, FloorFactorOf(*p, floorCache)))
 					FillBlock(dst, outW, n, flat);
 				continue;
 			}
-			if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, nullptr))
+			if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, nullptr, FloorFactorOf(*p, floorCache)))
 				FillBlock(dst, outW, n, flat);
 		}
 	}
@@ -1407,6 +1453,14 @@ int PackScale()
 	return 1;
 }
 
+namespace {
+/** The rule "a" (anything else: off), with its strength. */
+void SetMinBright(std::string_view mode, double strength)
+{
+	MinBright = mode == "a" ? static_cast<float>(std::clamp(strength, 0.0, 1.0)) : 0;
+}
+} // namespace
+
 void Init()
 {
 	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
@@ -1421,6 +1475,7 @@ void Init()
 	FreeSilhouette = false;
 	PixelShading = false;
 	MonsterLights.clear();
+	MinBright = 0;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
 		std::string kind;
@@ -1435,6 +1490,11 @@ void Init()
 			std::string mode;
 			words >> mode;
 			PixelShading = mode == "pixel";
+		} else if (kind == "minbright") {
+			std::string mode;
+			double strength = 0;
+			words >> mode >> strength;
+			SetMinBright(mode, strength);
 		} else if (kind == "image") {
 			std::string file, palette;
 			words >> file >> palette;
@@ -1467,6 +1527,13 @@ void Init()
 		DumpEvery = every != nullptr ? std::max(0, std::atoi(every)) : 60;
 		DumpIds = std::getenv("DEVILUTIONX_HD_DUMP_IDS") != nullptr;
 	}
+	if (const char *floor = std::getenv("DEVILUTIONX_HD_MINBRIGHT"); floor != nullptr && *floor != '\0') {
+		const std::string text = floor;
+		const size_t colon = text.find(':');
+		SetMinBright(text.substr(0, colon), colon == std::string::npos ? 0 : std::atof(text.c_str() + colon + 1));
+	}
+	if (MinBright > 0)
+		LogInfo("HD: minimum brightness for monsters, {}", MinBright);
 	Active = true;
 	SurfaceBlitHook = &CopyProvenance;
 	LogInfo("HD: pack {} ({} images, {}x{}{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
@@ -1632,6 +1699,7 @@ void ForgetView(const Surface &out)
 	ViewX1 = std::min(out.region.x + out.region.w, Target->w);
 	ViewY1 = std::min(out.region.y + out.region.h, Target->h);
 	SceneSerial = NextSerial;
+	DrawLights.clear();
 }
 
 SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn, bool local)
@@ -1689,6 +1757,11 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		TrackShade = recoloured && !world ? ShadePixel : local || recoloured ? ShadeLocal : ShadeDraw;
 	}
 	if (image == 0 || out.surface != Target || TrackPlane != Plane.data() || TrackImage != image) return; // not tracked in the game's own surface
+	if (MinBright > 0 && Images[image].monster) {
+		// the light the game lit this monster draw with (a light table's level), for the floor's fade
+		const bool lit = drawTrn != nullptr && drawTrn >= LightTablesBegin && drawTrn < LightTablesEnd;
+		DrawLights[TrackSerial] = FloorWeightOfLevel(drawTrn == nullptr ? 0 : lit ? LightLevelOf(drawTrn) : 255);
+	}
 	if (boxed) Free.whole = Free.on;
 	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
 		Fx = { fx, left, top, std::max(out.region.x, 0), std::max(out.region.y, 0), std::min(out.region.x + out.region.w, Target->w), std::min(out.region.y + out.region.h, Target->h) };
