@@ -144,13 +144,15 @@ const uint8_t *LightTablesEnd = nullptr;
  * than one with pale art. ("a" names the rule; anything else is off.)
  * The strength fades out with the light level the draw was lit with: full up to level 11, then 3/4, 1/2, 1/4, and none at 15 (the game draws it black),
  * so a monster at the edge of the light stays as black as it is. The game itself hides monsters on unlit tiles (IsTileLit), so nothing new is ever drawn.
+ * A draw through a TRN that isn't a light table (Infravision's red, Stone Curse's grey, a unique's colours) gets no floor: it would bring the art's
+ * own colours back into the recolour.
  */
 float MinBright = 0;
 std::unordered_map<uint32_t, uint8_t> DrawLights; ///< by draw serial, how much of MinBright applies (0..255) to the monsters' draws of this frame
 
 uint8_t FloorWeightOfLevel(uint8_t level)
 {
-	if (level == 255 || level <= 11) return 255;
+	if (level <= 11) return 255;
 	return level >= 15 ? 0 : static_cast<uint8_t>(255 - (level - 11) * 64);
 }
 /** Reference palette file -> HdImage::palette (under ImagesMutex), and how many there are. */
@@ -1758,9 +1760,10 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 	}
 	if (image == 0 || out.surface != Target || TrackPlane != Plane.data() || TrackImage != image) return; // not tracked in the game's own surface
 	if (MinBright > 0 && Images[image].monster) {
-		// the light the game lit this monster draw with (a light table's level), for the floor's fade
+		// the light the game lit this monster draw with (a light table's level), for the floor's fade; a TRN that isn't a light table
+		// (Infravision, Stone Curse, a unique's colours) is a recolour and not dim light, so the floor leaves it alone
 		const bool lit = drawTrn != nullptr && drawTrn >= LightTablesBegin && drawTrn < LightTablesEnd;
-		DrawLights[TrackSerial] = FloorWeightOfLevel(drawTrn == nullptr ? 0 : lit ? LightLevelOf(drawTrn) : 255);
+		DrawLights[TrackSerial] = drawTrn == nullptr ? 255 : lit ? FloorWeightOfLevel(LightLevelOf(drawTrn)) : 0;
 	}
 	if (boxed) Free.whole = Free.on;
 	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
