@@ -3893,6 +3893,8 @@ void CheckIdentify(Player &player, int cii)
 		ScoreOnIdentified(*pi);
 	pi->_iIdentified = true;
 	CalcPlrInv(player, true);
+	if (&player == MyPlayer && cii < NUM_INVLOC)
+		NetSendCmdChItem(false, static_cast<uint8_t>(cii)); // the others' copy of the worn item is identified too (a unique's own held art)
 }
 
 void DoRepair(Player &player, int cii)
