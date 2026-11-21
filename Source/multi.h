@@ -33,7 +33,9 @@ struct Player;
  * player slot (a stock joiner sends an empty request), and the host appends it to the game info of the join accept,
  * so a joiner refuses a host without it (a stock host). See dvlnet/base.cpp ProtocolJoinTag.
  */
-constexpr uint8_t RemasterProtocol = 1;
+// 2 = the 8-player netcode together with multiplayer scoring (CMD_SCORE_*): raised when the two branches were merged,
+// so a remaster build from before the merge is refused at the join.
+constexpr uint8_t RemasterProtocol = 2;
 
 /* @brief Contains info of running public game (for game list browsing) */
 struct GameInfo {
