@@ -470,6 +470,7 @@ void DrawPlayer(const Surface &out, const Player &player, Point tilePosition, Po
 
 	const ClxSprite sprite = player.currentSprite();
 	const Point spriteBufferPosition = targetBufferPosition + player.getRenderingOffset(sprite);
+	const hd::HeldItem held = HdHeldItem(player); // the art of the weapon the hero holds, where the HD pack has it
 
 	if (&player == PlayerUnderCursor)
 		ClxDrawOutlineSkipColorZero(out, GetPlayerOutlineColor(player.getId()), spriteBufferPosition, sprite);

@@ -257,6 +257,20 @@ void AfterGameTick()
 		}
 		if (!placed) LogError("HD showcase: can't put an item at '{}'", where);
 		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "stat" && command.args.size() >= 2) {
+		// stat str|mag|dex|vit <n>: the hero's base attribute, so that any item can be equipped and used (held art: a weapon the hero can't use
+		// shows the unarmed set)
+		const int value = Int(command, 1);
+		const std::string &which = command.args[0];
+		if (which == "str") MyPlayer->_pBaseStr = value;
+		if (which == "mag") MyPlayer->_pBaseMag = value;
+		if (which == "dex") MyPlayer->_pBaseDex = value;
+		if (which == "vit") MyPlayer->_pBaseVit = value;
+		CalcPlrInv(*MyPlayer, true);
+	} else if (command.verb == "held") {
+		// held: logs the held art the HD layer has noted for the hero, and what it has loaded
+		const hd::HeldUse use = hd::Held();
+		LogInfo("HD showcase: held '{}' ({} items, {} sprite files, {} frames holding held art)", hd::HeldArt(MyPlayer), use.items, use.kits, use.frames);
 	} else if (command.verb == "inv") {
 		invflag = true;
 	} else if (command.verb == "mouse" && command.args.size() >= 2) {
@@ -286,8 +300,8 @@ void AfterGameTick()
 		const auto trim = [](std::string &s) { s.erase(0, s.find_first_not_of(" \t")); };
 		trim(rss);
 		trim(hwm);
-		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} indexed {} loads {} unloads {} rss {} hwm {}", command.args.empty() ? "" : command.args[0], use.bytes,
-		    use.peak, use.images, use.indexed, use.loads, use.unloads, rss, hwm);
+		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} indexed {} loads {} unloads {} held_frames {} rss {} hwm {}", command.args.empty() ? "" : command.args[0],
+		    use.bytes, use.peak, use.images, use.indexed, use.loads, use.unloads, hd::Held().frames, rss, hwm);
 	} else if (command.verb == "quit") {
 		diablo_quit(0);
 	} else {

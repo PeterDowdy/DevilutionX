@@ -1653,5 +1653,339 @@ TEST(HdTest, ArtOfMoreColoursIsKeptInFullColourAndDrawsExactly)
 	EXPECT_TRUE(shown == expected);
 }
 
+
+/** One picture, 8 x 8 of one colour, that hd.txt doesn't list (held art is found through its folder's render.json). */
+void WritePicture(const fs::path &file, SDL_Color c)
+{
+	fs::create_directories(file.parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+	SDL_FillRect(s, nullptr, SDL_MapRGBA(s->format, c.r, c.g, c.b, 255));
+	IMG_SavePNG(s, file.string().c_str());
+	SDL_FreeSurface(s);
+}
+
+/** A held folder's render.json as the renderer writes it: what it has (``sprites``: path -> frames, every direction) and much else. */
+void WriteHeldJson(const fs::path &folder, const std::vector<std::pair<std::string, int>> &sprites)
+{
+	fs::create_directories(folder);
+	std::ofstream json(folder / "render.json");
+	json << "{\n \"key\": \"" << folder.filename().string() << "\",\n \"names\": [\"A \\\"name\\\", quoted\"],\n \"set\": \"s\",\n"
+	     << " \"per_kit\": {\"plrgfx/warrior/wls\": {\"seat\": {\"docs\": {\"wlsas\": {\"dirs\": [9], \"frames\": -1, \"roll_deg\": [45.0, -1.5e1]}}}, \"on\": true, \"off\": null}},\n"
+	     << " \"sprites\": {";
+	for (size_t i = 0; i < sprites.size(); ++i)
+		json << (i > 0 ? "," : "") << "\n  \"" << sprites[i].first << "\": {\"dirs\": [0, 1, 2, 3, 4, 5, 6, 7], \"frames\": " << sprites[i].second << "}";
+	json << "\n },\n \"rendered\": \"2026-11-21T00:00:00-07:00\"\n}\n";
+}
+
+TEST(HdTest, HeroesDrawTheArtOfTheWeaponTheyHold)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_held";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\nheld held\n";
+		WriteArt(pack, "sprite/plrgfx/warrior/wls/wlsas/0.0.png", { 120, 60, 60 }, index);     // what every sword shares
+		WriteArt(pack, "sprite/monsters/zombie/zombiea/0.0.png", { 90, 90, 90 }, index);
+	}
+	WriteHeldJson(pack / "held/c057", { { "plrgfx/warrior/wls/wlsas", 1 }, { "plrgfx/rogue/rls/rlsas", 1 } });
+	WritePicture(pack / "held/c057/plrgfx/warrior/wls/wlsas/0.0.png", { 60, 120, 60 });         // the Bastard Sword's
+	WritePicture(pack / "held/c057/plrgfx/rogue/rls/rlsas/0.0.png", { 60, 60, 120 });           // a rogue's, whose set has no art
+	WriteHeldJson(pack / "held/c057~doombringer", { { "plrgfx/warrior/wls/wlsas", 1 } });
+	WritePicture(pack / "held/c057~doombringer/plrgfx/warrior/wls/wlsas/0.0.png", { 200, 200, 60 }); // a unique's own
+	WritePicture(pack / "held/c058/plrgfx/warrior/wls/wlsas/0.0.png", { 30, 30, 30 });          // unfinished: no render.json yet
+	unsetenv("DEVILUTIONX_HD_HELD");
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	EXPECT_EQ(hd::Held().items, 2U);
+	EXPECT_EQ(hd::Held().kits, 3U);
+
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 88, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+
+	// Every hero has its own copy of its sprite files, as in the game
+	std::vector<std::vector<uint8_t>> heroes(11, Sprite());
+	for (size_t i = 0; i < heroes.size(); ++i) {
+		const char *file = i == 5 || i == 6 ? "PlrGFX\\Rogue\\RLS\\RLSAS.CL2" : i == 7 ? "Monsters\\Zombie\\ZombieA.CL2" : "PlrGFX\\Warrior\\WLS\\WLSAS.CL2";
+		hd::RegisterSpriteList(file, 0, ClxSpriteList { heroes[i].data() });
+	}
+	const auto draw = [&](size_t i) { ClxDraw(out, { static_cast<int>(i) * 8, 3 }, ClxSpriteList { heroes[i].data() }[0]); };
+	draw(0); // no held item named: the set's art
+	{
+		const hd::HeldItem bastardSword(&heroes[1], 57);
+		draw(1);
+	}
+	{
+		const hd::HeldItem doombringer(&heroes[2], 57, 3, "Doombringer");
+		draw(2);
+	}
+	{
+		const hd::HeldItem unfinished(&heroes[3], 58);
+		draw(3);
+	}
+	{
+		const hd::HeldItem shortSword(&heroes[4], 64); // no art of its own
+		draw(4);
+	}
+	{
+		const hd::HeldItem rogue(&heroes[5], 57);
+		draw(5);
+	}
+	draw(6); // the rogue's set has no art: the original sprite
+	{
+		const hd::HeldItem notAHero(&heroes[7], 57); // a monster drawn while the scope lives keeps its own art
+		draw(7);
+	}
+	{
+		const hd::HeldItem shield(&heroes[8], -1); // a shield in hand: the set's art
+		draw(8);
+	}
+	{
+		const hd::HeldItem otherUnique(&heroes[9], 57, 5, "The Grandfather"); // a unique without art of its own: its picture's
+		draw(9);
+	}
+	draw(10); // after the scopes: the set's art
+	hd::Present(nullptr, pal);
+	EXPECT_EQ(hd::HeldArt(&heroes[1]), "c057");
+	EXPECT_EQ(hd::HeldArt(&heroes[2]), "c057~doombringer");
+	EXPECT_EQ(hd::HeldArt(&heroes[3]), "");
+	EXPECT_EQ(hd::HeldArt(&heroes[4]), "");
+	EXPECT_EQ(hd::HeldArt(&heroes[8]), "");
+	EXPECT_EQ(hd::HeldArt(&heroes[9]), "c057");
+	EXPECT_EQ(hd::HeldArt(&heroes[0]), "") << "never noted";
+
+	SDL_Surface *argb = LoadFrame(dump);
+	ASSERT_NE(argb, nullptr);
+	ExpectColor(At(argb, 2, 2), 120, 60, 60, "a hero drawn without a held item");
+	ExpectColor(At(argb, 18, 2), 60, 120, 60, "holding the Bastard Sword: its art");
+	ExpectColor(At(argb, 34, 2), 200, 200, 60, "holding Doombringer: the unique's own art");
+	ExpectColor(At(argb, 50, 2), 120, 60, 60, "an item whose folder is unfinished: the set's art");
+	ExpectColor(At(argb, 66, 2), 120, 60, 60, "an item without held art: the set's art");
+	ExpectColor(At(argb, 82, 2), 60, 60, 120, "a rogue holding the Bastard Sword, though the rogue's set has no art");
+	ExpectColor(At(argb, 98, 2), 200, 50, 50, "the rogue without a held item: the original pixels");
+	ExpectColor(At(argb, 114, 2), 90, 90, 90, "a monster: its own art");
+	ExpectColor(At(argb, 130, 2), 120, 60, 60, "a shield in hand: the set's art");
+	ExpectColor(At(argb, 146, 2), 60, 120, 60, "a unique without art of its own: its picture's");
+	ExpectColor(At(argb, 162, 2), 120, 60, 60, "after the hero's draw");
+	SDL_FreeSurface(argb);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, WithoutAHeldFolderHeroesDrawAsBefore)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_held_none";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n"; // no "held" line: the folder below is not read
+		WriteArt(pack, "sprite/plrgfx/warrior/wls/wlsat/0.0.png", { 120, 60, 60 }, index);
+	}
+	WriteHeldJson(pack / "held/c057", { { "plrgfx/warrior/wls/wlsat", 1 } });
+	WritePicture(pack / "held/c057/plrgfx/warrior/wls/wlsat/0.0.png", { 60, 120, 60 });
+	unsetenv("DEVILUTIONX_HD_HELD");
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_EQ(hd::Held().items, 0U);
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	std::vector<uint8_t> hero = Sprite();
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLS\\WLSAT.CL2", 0, ClxSpriteList { hero.data() });
+	{
+		const hd::HeldItem bastardSword(hero.data(), 57);
+		ClxDraw(Surface(pal), { 0, 3 }, ClxSpriteList { hero.data() }[0]);
+	}
+	hd::Present(nullptr, pal);
+	SDL_Surface *argb = LoadFrame(dump);
+	ASSERT_NE(argb, nullptr);
+	ExpectColor(At(argb, 2, 2), 120, 60, 60, "the set's art");
+	SDL_FreeSurface(argb);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+/** A pack with a weapon set's stand and attack art and two items' held art for both (64 colours each, so frames compare exactly). */
+struct HeldPack {
+	fs::path pack;
+	fs::path dump;
+	SDL_Surface *pal = nullptr;
+
+	static void Write(const fs::path &file, int shade)
+	{
+		fs::create_directories(file.parent_path());
+		SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+		for (int y = 0; y < 8; ++y)
+			for (int x = 0; x < 8; ++x)
+				static_cast<uint32_t *>(s->pixels)[y * (s->pitch / 4) + x] = SDL_MapRGBA(s->format, 40 + 20 * x, 40 + 20 * y, shade, 255);
+		IMG_SavePNG(s, file.string().c_str());
+		SDL_FreeSurface(s);
+	}
+
+	explicit HeldPack(const std::string &name)
+	{
+		pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+		dump = pack / "dump";
+		fs::remove_all(pack);
+		fs::create_directories(dump);
+		fs::create_directories(pack / "palettes");
+		const std::array<SDL_Color, 256> colors = Palette();
+		{
+			std::ofstream palFile(pack / "palettes/test.pal", std::ios::binary);
+			for (const SDL_Color &c : colors)
+				palFile << c.r << c.g << c.b;
+			std::ofstream index(pack / "hd.txt");
+			index << "scale 2\n";
+			for (const char *anim : { "wlswl", "wlsht" }) {
+				const std::string file = std::string("sprite/plrgfx/warrior/wls/") + anim + "/0.0.png";
+				Write(pack / file, 10);
+				index << "image " << file << " palettes/test.pal\n";
+			}
+		}
+		for (const char *key : { "c060", "c061" }) { // held art elsewhere, as the studio's preview/held is (DEVILUTIONX_HD_HELD)
+			WriteHeldJson(pack / "elsewhere" / key, { { "plrgfx/warrior/wls/wlswl", 1 }, { "plrgfx/warrior/wls/wlsht", 1 } });
+			for (const char *anim : { "wlswl", "wlsht" })
+				Write(pack / "elsewhere" / key / "plrgfx/warrior/wls" / anim / "0.0.png", key[3] == '0' ? 150 : 250);
+		}
+		setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+		setenv("DEVILUTIONX_HD_HELD", (pack / "elsewhere").string().c_str(), 1);
+		setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+		setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+		unsetenv("DEVILUTIONX_HD_MEMORY_MB");
+		hd::Init();
+		pal = SDL_CreateRGBSurfaceWithFormat(0, 16, 8, 8, SDL_PIXELFORMAT_INDEX8);
+		SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+		SDL_FillRect(pal, nullptr, 0);
+		hd::SetTarget(pal);
+	}
+
+	~HeldPack()
+	{
+		unsetenv("DEVILUTIONX_HD_HELD");
+		SDL_FreeSurface(pal);
+		fs::remove_all(pack);
+	}
+
+	static std::string Held(const char *key, const char *anim)
+	{
+		return std::string("held/") + key + "/plrgfx/warrior/wls/" + anim + "/0.0.png";
+	}
+
+	void EmptyFrames(int n) const
+	{
+		for (int i = 0; i < n; ++i) {
+			hd::ForgetView(Surface(pal));
+			hd::Present(nullptr, pal);
+		}
+	}
+
+	/** A frame of the game view showing the hero ``who`` holding the item graphic ``item``: ``sprites`` side by side. */
+	std::vector<uint32_t> Frame(const std::string &name, const void *who, int item, const std::vector<ClxSprite> &sprites) const
+	{
+		const Surface out(pal);
+		hd::ForgetView(out);
+		{
+			const hd::HeldItem held(who, item);
+			for (size_t i = 0; i < sprites.size(); ++i)
+				ClxDraw(out, { static_cast<int>(i) * 8, 3 }, sprites[i]);
+		}
+		hd::RequestDump(name);
+		hd::Present(nullptr, pal);
+		return DumpedFrame(dump, name);
+	}
+};
+
+TEST(HdTest, HeldArtIsLetGoOfWhenTheHeroHoldsAnotherItem)
+{
+	const HeldPack pack("held_swap");
+	ASSERT_TRUE(hd::Enabled());
+	ASSERT_EQ(hd::Held().items, 2U);
+	const hd::MemoryUse before = hd::Memory();
+	const int hero = 0; // (the address names the hero)
+	std::optional<OwnedClxSpriteList> stand = Owned(Sprite());
+	std::optional<OwnedClxSpriteList> attack = Owned(Sprite());
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLS\\WLSWL.CL2", 0, *stand);
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLS\\WLSHT.CL2", 0, *attack);
+
+	const std::vector<uint32_t> first = pack.Frame("c060", &hero, 60, { (*stand)[0], (*attack)[0] });
+	ASSERT_FALSE(first.empty());
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c060", "wlswl")));
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c060", "wlsht")));
+	EXPECT_EQ(hd::Memory().loads, before.loads + 2);
+	EXPECT_EQ(hd::Held().frames, 2U);
+
+	// The hero takes the other sword (same weapon class: its sprite files stay), as CalcPlrInv tells the layer, and stands about
+	{
+		const hd::HeldItem noted(&hero, 61);
+	}
+	EXPECT_EQ(hd::Held().frames, 0U) << "the frames let go of the last sword's art at once";
+	const std::vector<uint32_t> other = pack.Frame("c061", &hero, 61, { (*stand)[0] });
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c060", "wlswl")));
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c060", "wlsht"))) << "let go of, though the attack wasn't drawn again";
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c061", "wlswl")));
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c061", "wlsht"))) << "loaded only when drawn";
+	EXPECT_TRUE(other != first);
+
+	// The first sword again: loaded again, drawn exactly as before
+	const std::vector<uint32_t> again = pack.Frame("c060-again", &hero, 60, { (*stand)[0], (*attack)[0] });
+	EXPECT_TRUE(again == first);
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c060", "wlswl")));
+
+	// A shield instead: the set's art, the sword's let go of
+	const std::vector<uint32_t> shield = pack.Frame("shield", &hero, -1, { (*stand)[0], (*attack)[0] });
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c060", "wlswl")));
+	EXPECT_TRUE(hd::Loaded("sprite/plrgfx/warrior/wls/wlswl/0.0.png"));
+	EXPECT_TRUE(shield != first);
+
+	// Two heroes holding the same sword: one lets go, the other still draws it
+	const int otherHero = 0;
+	const OwnedClxSpriteList stand2 = Owned(Sprite());
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLS\\WLSWL.CL2", 0, stand2);
+	pack.Frame("both", &hero, 61, { (*stand)[0] });
+	pack.Frame("both2", &otherHero, 61, { stand2[0] });
+	{
+		const hd::HeldItem noted(&hero, 60);
+	}
+	pack.EmptyFrames(20);
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c061", "wlswl"))) << "the other hero still holds it";
+	hd::LetGoOfHeldArt(&otherHero);
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c061", "wlswl")));
+
+	// The game frees the hero's sprite files (a level change, another weapon class): its held art goes with them
+	pack.Frame("freed", &hero, 60, { (*stand)[0], (*attack)[0] });
+	EXPECT_TRUE(hd::Loaded(HeldPack::Held("c060", "wlsht")));
+	stand.reset();
+	attack.reset();
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c060", "wlswl")));
+	EXPECT_FALSE(hd::Loaded(HeldPack::Held("c060", "wlsht")));
+	EXPECT_EQ(hd::Held().frames, 0U);
+}
+
 } // namespace
 } // namespace devilution

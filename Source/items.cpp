@@ -2428,6 +2428,26 @@ hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped)
 	return hd::ItemGraphic(item._iCurs, dropped, -1, {});
 }
 
+hd::HeldItem HdHeldItem(const Player &player)
+{
+	// The one weapon in the hero's hands (a two-handed one included): a shield in either hand keeps the weapon set's art, as do two weapons
+	const Item *weapon = nullptr;
+	for (const Item *hand : { &player.InvBody[INVLOC_HAND_LEFT], &player.InvBody[INVLOC_HAND_RIGHT] }) {
+		if (hand->isEmpty()) continue;
+		if (hand->_itype == ItemType::Shield || weapon != nullptr) return hd::HeldItem(&player, -1);
+		weapon = hand;
+	}
+	// (a weapon the hero can't use is drawn with the unarmed set, GetPlrAnimWeaponId)
+	if (weapon == nullptr || !weapon->isWeapon() || !player.CanUseItem(*weapon)) return hd::HeldItem(&player, -1);
+	// A unique item's own art as for its picture (HdItemGraphic): once identified, or always for one with a picture of its own
+	if (weapon->_iMagical == ITEM_QUALITY_UNIQUE && weapon->_iUid >= 0 && static_cast<size_t>(weapon->_iUid) < UniqueItems.size()) {
+		const UniqueItem &unique = UniqueItems[weapon->_iUid];
+		if (weapon->_iIdentified || unique.UICurs != ICURS_DEFAULT)
+			return hd::HeldItem(&player, weapon->_iCurs, weapon->_iUid, unique.UIName);
+	}
+	return hd::HeldItem(&player, weapon->_iCurs);
+}
+
 void ClearUniqueItemFlags()
 {
 	memset(UniqueItemFlags, 0, sizeof(UniqueItemFlags));
@@ -2939,6 +2959,9 @@ void CalcPlrInv(Player &player, bool loadgfx)
 		loadgfx = false;
 	}
 	CalcPlrItemVals(player, loadgfx);
+	{
+		const hd::HeldItem held = HdHeldItem(player); // the HD layer lets go of the held art of what the hero held before (when it differs)
+	}
 
 	if (&player == MyPlayer) {
 		// Now that stat gains from equipped items have been calculated, mark unusable scrolls etc
