@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <deque>
 #include <expected>
 #include <memory>
 #include <string>
@@ -46,6 +47,8 @@ private:
 		asio::ip::tcp::socket socket;
 		asio::steady_timer timer;
 		int timeout;
+		/** Frames waiting to be written, the front one being written: one async_write at a time per socket. */
+		std::deque<buffer_t> sendQueue;
 		client_connection(asio::io_context &ioc)
 		    : socket(ioc)
 		    , timer(ioc)
@@ -76,6 +79,7 @@ private:
 	std::expected<void, PacketError> StartSend(const scc &con, packet &pkt);
 	std::expected<void, PacketError> StartSend(const scc &con, PacketError::ErrorCode errorCode);
 	std::expected<void, PacketError> StartSend(const scc &con, buffer_t pktData, uint16_t flags);
+	void StartWrite(const scc &con);
 	void HandleSend(const scc &con, const asio::error_code &ec, size_t bytesSent);
 	void StartTimeout(const scc &con);
 	void HandleTimeout(const scc &con, const asio::error_code &ec);

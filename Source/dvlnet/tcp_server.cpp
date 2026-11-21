@@ -205,22 +205,36 @@ std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t 
 	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pktData, flags);
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
-	const asio::mutable_buffer buf = asio::buffer(*framePtr);
+	// One write in flight per socket: a second async_write started while the first is only partly written (the
+	// client is not reading, e.g. while it loads a level) interleaves the two frames and corrupts the stream.
+	con->sendQueue.push_back(*std::move(frame));
+	if (con->sendQueue.size() == 1)
+		StartWrite(con);
+	return {};
+}
+
+void tcp_server::StartWrite(const scc &con)
+{
+	const asio::mutable_buffer buf = asio::buffer(con->sendQueue.front());
 	asio::async_write(con->socket, buf,
-	    [this, con, frame = std::move(framePtr)](const asio::error_code &ec, size_t bytesSent) {
+	    [this, con](const asio::error_code &ec, size_t bytesSent) {
 		    HandleSend(con, ec, bytesSent);
 	    });
-	return {};
 }
 
 void tcp_server::HandleSend(const scc &con, const asio::error_code &ec,
     size_t /*bytesSent*/)
 {
 	if (ec) {
+		con->sendQueue.clear();
 		Log("Network error: {}", ec.message());
 		DropConnection(con);
+		return;
 	}
+	if (!con->sendQueue.empty())
+		con->sendQueue.pop_front();
+	if (!con->sendQueue.empty())
+		StartWrite(con);
 }
 
 void tcp_server::StartAccept()

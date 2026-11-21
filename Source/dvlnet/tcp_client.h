@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -45,8 +46,15 @@ private:
 
 	std::optional<PacketError> ioHandlerResult;
 
+	/**
+	 * Frames waiting to be written, the front one being written. asio allows one async_write at a time per socket:
+	 * a second one started while the first is only partly written interleaves their bytes.
+	 */
+	std::deque<std::unique_ptr<buffer_t>> sendQueue;
+
 	void HandleReceive(const asio::error_code &error, size_t bytesRead);
 	void StartReceive();
+	void StartWrite();
 	void HandleSend(const asio::error_code &error, size_t bytesSent);
 	void HandleTcpErrorCode();
 

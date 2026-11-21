@@ -195,10 +195,25 @@ void tcp_client::StartReceive()
 	    std::bind(&tcp_client::HandleReceive, this, std::placeholders::_1, std::placeholders::_2));
 }
 
+void tcp_client::StartWrite()
+{
+	const asio::mutable_buffer buf = asio::buffer(*sendQueue.front());
+	asio::async_write(sock, buf, [this](const asio::error_code &error, size_t bytesSent) {
+		HandleSend(error, bytesSent);
+	});
+}
+
 void tcp_client::HandleSend(const asio::error_code &error, size_t /*bytesSent*/)
 {
-	if (error)
+	if (error) {
+		sendQueue.clear();
 		RaiseIoHandlerError(error.message());
+		return;
+	}
+	if (!sendQueue.empty())
+		sendQueue.pop_front();
+	if (!sendQueue.empty())
+		StartWrite();
 }
 
 void tcp_client::HandleTcpErrorCode()
@@ -227,11 +242,10 @@ std::expected<void, PacketError> tcp_client::send(packet &pkt)
 	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pkt.Data());
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
-	const asio::mutable_buffer buf = asio::buffer(*framePtr);
-	asio::async_write(sock, buf, [this, frame = std::move(framePtr)](const asio::error_code &error, size_t bytesSent) {
-		HandleSend(error, bytesSent);
-	});
+	// One write in flight per socket (see sendQueue); the next one starts when it completes.
+	sendQueue.push_back(std::make_unique<buffer_t>(*std::move(frame)));
+	if (sendQueue.size() == 1)
+		StartWrite();
 	return {};
 }
 
