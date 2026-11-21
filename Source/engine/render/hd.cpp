@@ -1686,17 +1686,39 @@ bool Enabled()
 	return Active;
 }
 
-int MonsterLight(std::string_view spritePath, std::string_view trnFile)
+namespace {
+/** "zombie\\zombie" -> "monsters/zombie/zombie": a monster's sprite path as the pack's "light" lines name it. */
+std::string LightBody(std::string_view spritePath)
 {
-	if (!Active || MonsterLights.empty() || spritePath.empty()) return 0;
 	std::string body = "monsters/";
 	for (const char c : spritePath)
 		body += c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	return body;
+}
+} // namespace
+
+int MonsterLight(std::string_view spritePath, std::string_view trnFile)
+{
+	if (!Active || MonsterLights.empty() || spritePath.empty()) return 0;
+	const std::string body = LightBody(spritePath);
 	if (!trnFile.empty()) {
 		const auto own = MonsterLights.find(body + "@" + TrnStem(trnFile));
 		if (own != MonsterLights.end()) return own->second;
 	}
 	const auto it = MonsterLights.find(body);
+	return it != MonsterLights.end() ? it->second : 0;
+}
+
+int UniqueMonsterLight(std::string_view spritePath, std::string_view trnFile, std::string_view uniqueTrn, std::string_view uniqueName)
+{
+	if (!Active || MonsterLights.empty() || spritePath.empty() || uniqueTrn.empty()) return 0;
+	// The keys of his own art (SpriteScope): the type's swap ("" for none), "+" his TRN, and his slug when he has one
+	const std::string shared = LightBody(spritePath) + "@" + (trnFile.empty() ? std::string() : TrnStem(trnFile)) + "+" + TrnStem(uniqueTrn);
+	if (const std::string slug = NameSlug(uniqueName); !slug.empty()) {
+		const auto own = MonsterLights.find(shared + "~" + slug);
+		if (own != MonsterLights.end()) return own->second;
+	}
+	const auto it = MonsterLights.find(shared);
 	return it != MonsterLights.end() ? it->second : 0;
 }
 

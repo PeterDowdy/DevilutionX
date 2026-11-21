@@ -217,6 +217,15 @@ int PackScale();
 int MonsterLight(std::string_view spritePath, std::string_view trnFile);
 
 /**
+ * The light radius the pack gives one unique monster of his own, under the keys of his own art: "light monsters/<sprite path>@<type
+ * trn>+<unique trn>~<slug> <radius>" (his alone) first, then "...@<type trn>+<unique trn>" (the uniques of that type that share his TRN);
+ * "@+<unique trn>..." for a type without a TRN. 0 when the pack names neither: then his type's line applies (MonsterLight), as his art falls
+ * back on his type's. A unique's line never lights his type: MonsterLight doesn't read it. ``uniqueTrn`` is his TRN ("blf"), ``uniqueName``
+ * the table's name ("Blightfire", made a slug as NameTrn does).
+ */
+int UniqueMonsterLight(std::string_view spritePath, std::string_view trnFile, std::string_view uniqueTrn, std::string_view uniqueName);
+
+/**
  * Remembers which file, group and frame each sprite of a freshly loaded CEL/CL2 file is. ``path`` may carry an extension. ``owner``: the start
  * of the data the game will free (ClxFreeHook, ForgetSprites), when the sprites are part of a larger buffer (a sheet read from several files,
  * a monster type's animations read together); by default the sprites' own data.

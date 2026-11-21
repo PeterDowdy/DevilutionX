@@ -502,6 +502,13 @@ extern bool sgbSaveSoundOn;
 std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMonsterType monsterType, size_t miniontype, int bosspacksize, const UniqueMonsterData &uniqueMonsterData);
 /** Lights the HD pack's type lights (hd.txt "light" lines) leave free in the pool for the players', the uniques' and the spells'. */
 constexpr int TypeLightsKeptFree = 12;
+/** The light radius a unique monster carries without an HD pack that says otherwise. */
+constexpr int UniqueLightRadius = 3;
+/**
+ * @brief The light radius of a unique monster of type ``type``: the HD pack's line for him (hd::UniqueMonsterLight: the key of his own
+ * art) if it has one, else the game's UniqueLightRadius, or his type's light (hd::MonsterLight) where the pack gives the type a brighter one.
+ */
+int UniqueMonsterLightRadius(const MonsterData &type, const UniqueMonsterData &unique);
 /**
  * @brief Takes the type lights (HD pack) from the monsters a level was just made with. For a level that is loaded
  * again: the monsters of the save take their place and are given these lights (GiveTypeLights).
