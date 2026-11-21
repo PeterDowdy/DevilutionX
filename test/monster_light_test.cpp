@@ -21,8 +21,17 @@ namespace fs = std::filesystem;
 
 constexpr int Radius = 6;
 
-/** A level with two monster types, and an HD pack that gives the first of them a light ("light" line of hd.txt). */
-void LitLevel()
+/** "zombie\\zombie" -> "monsters/zombie/zombie": a type's sprite path as the pack's "light" lines name it. */
+std::string LightKey(_monster_id type)
+{
+	std::string who = "monsters/";
+	for (const char *c = MonstersData[type].spritePath(); *c != '\0'; ++c)
+		who += *c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+	return who;
+}
+
+/** A level with two monster types, and an HD pack that gives the first of them a light ("light" line of hd.txt), and ``extra`` lines. */
+void LitLevel(const std::string &extra = "")
 {
 	LoadMonsterData();
 	InitLevelMonsters();
@@ -31,15 +40,14 @@ void LitLevel()
 	LevelMonsterTypeCount = 2;
 	InitLighting();
 
-	std::string who = "monsters/";
-	for (const char *c = MonstersData[MT_NZOMBIE].spritePath(); *c != '\0'; ++c)
-		who += *c == '\\' ? '/' : static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+	const std::string who = LightKey(MT_NZOMBIE);
 	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_monster_light";
 	fs::remove_all(pack);
 	fs::create_directories(pack);
 	{
 		std::ofstream index(pack / "hd.txt");
-		index << "scale 2\nlight " << who << " " << Radius << "\n";
+		index << "scale 2\nlight " << who << " " << Radius << "\n"
+		      << extra;
 	}
 	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
 	hd::Init();
@@ -150,6 +158,66 @@ TEST(MonsterLight, ALevelLoadedAgainGivesItsTypeLightsToTheMonstersOfTheSave)
 	EXPECT_TRUE(Lights[lights[1]].isInvalid) << "the light of the zombie that died goes out";
 	EXPECT_TRUE(Lights[lights[2]].isInvalid);
 	EXPECT_EQ(ValidLights(), 1);
+}
+
+const UniqueMonsterData &UniqueNamed(const char *name)
+{
+	const auto found = std::find_if(UniqueMonstersData.begin(), UniqueMonstersData.end(), [&](const UniqueMonsterData &u) { return u.mName == name; });
+	EXPECT_NE(found, UniqueMonstersData.end()) << name;
+	return *found;
+}
+
+TEST(MonsterLight, AUniquesOwnLightIsHisAloneAndNeverLightsHisType)
+{
+	// Blightfire is a Fire Clan archer (goatbow\goatb through goatbow\red) with a TRN of his own: "@red+blf", as his art is keyed
+	LoadMonsterData(); // (for the keys; LitLevel loads it again)
+	const std::string archer = LightKey(MT_RGOATBW);
+	LitLevel("light " + archer + "@red+blf 9\n");
+	const UniqueMonsterData &blightfire = UniqueNamed("Blightfire");
+	ASSERT_EQ(blightfire.mtype, MT_RGOATBW);
+	const MonsterData &fireClan = MonstersData[MT_RGOATBW];
+
+	EXPECT_EQ(hd::UniqueMonsterLight(fireClan.spritePath(), fireClan.trnFile, blightfire.mTrnName, blightfire.mName), 9);
+	EXPECT_EQ(UniqueMonsterLightRadius(fireClan, blightfire), 9) << "the unique's own light wins";
+	EXPECT_EQ(hd::MonsterLight(fireClan.spritePath(), fireClan.trnFile), 0) << "a unique's light is not his type's";
+	EXPECT_EQ(hd::MonsterLight(fireClan.spritePath(), {}), 0) << "nor his body's";
+	const MonsterData &goat = MonstersData[MT_NGOATBW]; // the same body, another clan
+	EXPECT_EQ(hd::UniqueMonsterLight(goat.spritePath(), goat.trnFile, blightfire.mTrnName, blightfire.mName), 0);
+
+	// An ordinary Fire Clan archer beside him has no light; a zombie (lit type) still has its own
+	LevelMonsterTypes[1].type = MT_RGOATBW;
+	Monster &archerMonster = Place(1, { 20, 20 });
+	Monster &zombie = Place(0, { 24, 20 });
+	GiveTypeLights({});
+	EXPECT_EQ(archerMonster.lightId, NO_LIGHT);
+	EXPECT_TRUE(Lit(zombie));
+	EXPECT_EQ(Lights[zombie.lightId].radius, Radius);
+}
+
+TEST(MonsterLight, AUniqueTakesHisTypesLightOnlyWhenItIsBrighterThanAUniquesOwn)
+{
+	// No line of his own: a unique of the lit zombie type (Soulpus) takes the type's light like his art does, one of an unlit type keeps
+	// the game's; a dim type light doesn't dim a unique
+	LoadMonsterData();
+	LitLevel("light " + LightKey(MT_RGOATBW) + "@red 2\n");
+	EXPECT_EQ(UniqueMonsterLightRadius(MonstersData[MT_NZOMBIE], UniqueNamed("Soulpus")), Radius);
+	EXPECT_EQ(UniqueMonsterLightRadius(MonstersData[MT_RGOATBW], UniqueNamed("Blightfire")), UniqueLightRadius);
+	EXPECT_EQ(UniqueMonsterLightRadius(MonstersData[MT_BLINK], UniqueNamed("Moonbender")), UniqueLightRadius);
+	EXPECT_EQ(hd::MonsterLight(MonstersData[MT_RGOATBW].spritePath(), MonstersData[MT_RGOATBW].trnFile), 2) << "the type's own";
+}
+
+TEST(MonsterLight, AUniquesSlugLightWinsOverTheLightOfHisSharedColours)
+{
+	// Moonbender and Wrathraven are both MT_BLINK through the shared "general" TRN: "+general" lights both, "+general~moonbender" him alone
+	LoadMonsterData();
+	const MonsterData &blink = MonstersData[MT_BLINK];
+	ASSERT_TRUE(blink.trnFile.empty()) << "a type without a TRN of its own: the key starts \"@+\"";
+	const std::string swap = LightKey(MT_BLINK) + "@+general";
+	LitLevel("light " + swap + " 5\nlight " + swap + "~moonbender 7\n");
+	EXPECT_EQ(UniqueMonsterLightRadius(blink, UniqueNamed("Moonbender")), 7);
+	EXPECT_EQ(UniqueMonsterLightRadius(blink, UniqueNamed("Wrathraven")), 5);
+	EXPECT_EQ(hd::MonsterLight(blink.spritePath(), blink.trnFile), 0) << "neither lights the type";
+	EXPECT_EQ(UniqueMonsterLightRadius(MonstersData[MT_NZOMBIE], UniqueNamed("Soulpus")), Radius) << "another type's general unique";
 }
 
 } // namespace

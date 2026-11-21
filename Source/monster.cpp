@@ -3339,6 +3339,14 @@ bool PosOkMovingMissile(Point position)
 
 } // namespace
 
+int UniqueMonsterLightRadius(const MonsterData &type, const UniqueMonsterData &unique)
+{
+	const int own = hd::UniqueMonsterLight(type.spritePath(), type.trnFile, unique.mTrnName, unique.mName);
+	if (own > 0)
+		return own;
+	return std::max(UniqueLightRadius, hd::MonsterLight(type.spritePath(), type.trnFile));
+}
+
 std::vector<int> TakeTypeLights()
 {
 	std::vector<int> lights;
@@ -3443,7 +3451,7 @@ std::expected<void, std::string> PrepareUniqueMonst(Monster &monster, UniqueMons
 	if (monsterType == UniqueMonsterType::HorkDemon)
 		monster.lightId = NO_LIGHT;
 	else
-		monster.lightId = AddLight(monster.position.tile, 3);
+		monster.lightId = AddLight(monster.position.tile, static_cast<uint8_t>(UniqueMonsterLightRadius(monster.data(), uniqueMonsterData)));
 
 	if (UseMultiplayerQuests()) {
 		if (monster.ai == MonsterAIID::LazarusSuccubus)
