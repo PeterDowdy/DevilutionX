@@ -1,10 +1,13 @@
 /**
  * @file score/score_board.cpp
  *
- * Multiplayer scoring: the leader board and the stepped end reveal, drawn in the chat-log text box.
+ * Multiplayer scoring: the leader board and the stepped end reveal.
  *
- * During play (Peter 2026-11-20): places only. Who is first / second / third in each award, who leads each family
- * (or "tied"), and the overall order. No counts are drawn, the player's own included.
+ * Laid out for HD screens (Peter 2026-11-20: "assume a hi-def monitor for all players"): one dark box over the play area
+ * above the main panel, a column per player.
+ * During play (Peter 2026-11-20): each player's place overall, in each award and in each family lead, and each player's
+ * banked points (uniques, Diablo, player-kill transfers; their events are announced in chat anyway). No other count is
+ * drawn, the player's own included.
  * At the end: the stepped reveal (banked standings, family leads six a step, the five awards, the final table), about two
  * seconds a step, any arrow key jumps to the last step; afterwards the board key reopens the final table with a Families
  * page and an Awards page that show every player's counts.
@@ -20,15 +23,16 @@
 #endif
 
 #include "DiabloUI/ui_flags.hpp"
+#include "control/control.hpp"
+#include "engine/palette.h"
+#include "engine/render/primitive_render.hpp"
 #include "engine/render/text_render.hpp"
 #include "help.h"
-#include "minitext.h"
 #include "options.h"
 #include "qol/chatlog.h"
 #include "score/score.h"
 #include "score/score_internal.hpp"
 #include "score/score_rules.hpp"
-#include "stores.h"
 #include "utils/format.hpp"
 #include "utils/language.h"
 #include "utils/str_cat.hpp"
@@ -47,30 +51,38 @@ using score::RevealStep;
 using score::RevealStepKind;
 using score::ScoreTable;
 
-constexpr int PaddingTop = 32;
-constexpr int PaddingLeft = 32;
-constexpr int PanelHeight = 297;
-constexpr int ContentTextWidth = 577;
-constexpr int LabelWidth = 150;
+constexpr int Margin = 16;
+constexpr int MaxBoardWidth = 1200;
+constexpr int Padding = 16;
+constexpr int LabelWidth = 240;
+constexpr int MaxColumnWidth = 190;
 constexpr uint32_t RevealStepMs = 2000;
+constexpr uint8_t BorderColor = PAL8_YELLOW + 2;
+constexpr uint8_t RuleColor = PAL8_YELLOW + 4;
 
-struct BoardLine {
-	std::string label;
+struct Cell {
 	std::string text;
 	UiFlags color = UiFlags::ColorWhite;
 };
 
-enum class Page : uint8_t {
-	Standings,
-	Families,
+/**
+ * One line of the board: a label and either a text, or one cell per player column (a table row).
+ * `heading` lines are drawn in blue across the whole width.
+ */
+struct BoardLine {
+	std::string label;
+	std::string text;
+	UiFlags color = UiFlags::ColorWhite;
+	std::vector<Cell> cells;
+	bool heading = false;
 };
+
 enum class FinalPage : uint8_t {
 	Table,
 	Families,
 	Awards,
 };
 
-Page LivePage = Page::Standings;
 FinalPage EndPage = FinalPage::Table;
 size_t SkipLines = 0;
 bool Revealing = false;
@@ -79,18 +91,15 @@ uint32_t RevealStepStart = 0;
 
 int LineHeight()
 {
-	return IsSmallFontTall() ? 18 : 14;
+	return IsSmallFontTall() ? 18 : 15;
 }
 
-int HeaderHeight()
+Rectangle BoardRect()
 {
-	return PaddingTop + LineHeight() + 24 + 6;
-}
-
-int NumVisibleLines()
-{
-	const int contents = PanelHeight - HeaderHeight() - 6 - 24 - 12;
-	return ((contents - 1) / LineHeight()) + 1;
+	const int screenWidth = GetScreenWidth();
+	const int width = std::min(screenWidth - (2 * Margin), MaxBoardWidth);
+	const int bottom = GetMainPanel().position.y - Margin;
+	return { { (screenWidth - width) / 2, Margin }, { width, std::max(bottom - Margin, 200) } };
 }
 
 std::string_view AwardName(Award award)
@@ -110,26 +119,32 @@ std::string_view AwardName(Award award)
 	return {};
 }
 
-std::string_view PlaceName(size_t place)
+std::string Ordinal(size_t place)
 {
 	switch (place) {
 	case 0:
-		return _("1st");
+		return std::string(_("1st"));
 	case 1:
-		return _("2nd");
+		return std::string(_("2nd"));
+	case 2:
+		return std::string(_("3rd"));
 	default:
-		return _("3rd");
+		return FormatRuntime(_("{:d}th"), place + 1);
 	}
+}
+
+std::string RowName(const ScoreTable &table, uint8_t row)
+{
+	if (row >= table.rows.size())
+		return std::string(_("Nobody"));
+	return table.rows[row].name;
 }
 
 std::string RowLabel(const ScoreTable &table, uint8_t row)
 {
-	if (row >= table.rows.size())
-		return std::string(_("Nobody"));
-	const score::ScoreRow &r = table.rows[row];
-	if (r.slot == score::NoSlot)
-		return StrCat(r.name, " ", _("(left)"));
-	return r.name;
+	if (row < table.rows.size() && table.rows[row].slot == score::NoSlot)
+		return StrCat(table.rows[row].name, " ", _("(left)"));
+	return RowName(table, row);
 }
 
 std::string JoinRows(const ScoreTable &table, const std::vector<uint8_t> &rows, std::string_view separator)
@@ -143,49 +158,66 @@ std::string JoinRows(const ScoreTable &table, const std::vector<uint8_t> &rows, 
 	return out;
 }
 
-/** "1. Anna   2. Bo = Cy" (places only, no counts). */
-std::string PlacesText(const ScoreTable &table, const std::vector<score::RankEntry> &ranks)
+/** The header row of a table: one column per row of `order`. */
+BoardLine NamesRow(const ScoreTable &table, const std::vector<uint8_t> &order)
 {
-	if (ranks.empty())
-		return "-";
-	std::string out;
-	for (const score::RankEntry &entry : ranks) {
-		if (!out.empty())
-			out += "    ";
-		StrAppend(out, entry.place + 1, ". ", JoinRows(table, entry.rows, " = "));
-	}
-	return out;
+	BoardLine line;
+	for (const uint8_t row : order)
+		line.cells.push_back({ RowLabel(table, row), UiFlags::ColorWhitegold });
+	return line;
 }
 
-std::string OverallText(const ScoreTable &table)
-{
-	const std::vector<score::RowTotal> totals = score::Totals(table);
-	std::string out;
-	for (const uint8_t row : score::OverallOrder(totals)) {
-		if (!out.empty())
-			out += "    ";
-		StrAppend(out, totals[row].place + 1, ". ", RowLabel(table, row));
-	}
-	return out.empty() ? "-" : out;
-}
-
+/** During play: places, banked points, award places, family leads; columns in overall order. */
 std::vector<BoardLine> LiveLines(const ScoreTable &table)
 {
+	const std::vector<score::LiveRow> live = score::LiveBoard(table);
+	std::vector<uint8_t> order;
+	for (const score::LiveRow &row : live)
+		order.push_back(row.row);
+	auto column = [&](uint8_t row) { return static_cast<size_t>(std::find(order.begin(), order.end(), row) - order.begin()); };
+
 	std::vector<BoardLine> lines;
-	if (LivePage == Page::Standings) {
-		lines.push_back({ std::string(_("Overall")), OverallText(table), UiFlags::ColorWhitegold });
-		lines.push_back({});
-		for (size_t a = 0; a < score::NumAwards; a++) {
-			const auto award = static_cast<Award>(a);
-			lines.push_back({ std::string(AwardName(award)), PlacesText(table, score::RankAward(table, award)) });
-		}
-		return lines;
+	lines.push_back(NamesRow(table, order));
+	BoardLine place { std::string(_("Place")), "", UiFlags::ColorWhite };
+	BoardLine banked { std::string(_("Banked points")), "", UiFlags::ColorWhite };
+	for (const score::LiveRow &row : live) {
+		place.cells.push_back({ Ordinal(row.overallPlace), row.overallPlace == 0 ? UiFlags::ColorGold : UiFlags::ColorWhite });
+		banked.cells.push_back({ StrCat(row.banked) });
 	}
-	const std::vector<score::FamilyLead> leads = score::FamilyLeads(table, ScoreFamilyOrder());
-	if (leads.empty())
+	lines.push_back(std::move(place));
+	lines.push_back(std::move(banked));
+	lines.push_back({});
+
+	lines.push_back({ "", std::string(_("Awards (places only)")), UiFlags::ColorBlue, {}, true });
+	for (size_t a = 0; a < score::NumAwards; a++) {
+		BoardLine line { std::string(AwardName(static_cast<Award>(a))), "", UiFlags::ColorWhite };
+		for (const score::LiveRow &row : live) {
+			const score::LivePlace &p = row.awards[a];
+			if (!p.placed())
+				line.cells.push_back({ "-", UiFlags::ColorWhite });
+			else if (p.tied)
+				line.cells.push_back({ FormatRuntime(_("tied {:s}"), Ordinal(p.place)), UiFlags::ColorWhite });
+			else
+				line.cells.push_back({ Ordinal(p.place), p.place == 0 ? UiFlags::ColorGold : UiFlags::ColorWhite });
+		}
+		lines.push_back(std::move(line));
+	}
+	lines.push_back({});
+
+	lines.push_back({ "", std::string(_("Most kills in a monster family")), UiFlags::ColorBlue, {}, true });
+	const std::vector<score::LiveFamily> families = score::LiveFamilies(table, ScoreFamilyOrder());
+	if (families.empty())
 		lines.push_back({ "", std::string(_("No family has been hunted yet.")) });
-	for (const score::FamilyLead &lead : leads)
-		lines.push_back({ std::string(ScoreFamilyName(lead.family)), lead.tied() ? std::string(_("tied")) : RowLabel(table, lead.row) });
+	for (const score::LiveFamily &family : families) {
+		BoardLine line { std::string(ScoreFamilyName(family.family)), "", UiFlags::ColorWhite };
+		line.cells.assign(order.size(), Cell {});
+		for (const uint8_t row : family.rows) {
+			const size_t c = column(row);
+			if (c < line.cells.size())
+				line.cells[c] = family.tied() ? Cell { std::string(_("tied")), UiFlags::ColorWhite } : Cell { std::string(_("leads")), UiFlags::ColorGold };
+		}
+		lines.push_back(std::move(line));
+	}
 	return lines;
 }
 
@@ -201,7 +233,7 @@ std::string EndReasonText(const ScoreTable &table)
 void AppendBanked(std::vector<BoardLine> &lines, const ScoreTable &table)
 {
 	lines.push_back({ "", EndReasonText(table), UiFlags::ColorWhitegold });
-	lines.push_back({ "", std::string(_("Banked points (uniques, Diablo, player kills):")), UiFlags::ColorBlue });
+	lines.push_back({ "", std::string(_("Banked points (uniques, Diablo, player kills):")), UiFlags::ColorBlue, {}, true });
 	std::vector<uint8_t> order(table.rows.size());
 	for (size_t i = 0; i < order.size(); i++)
 		order[i] = static_cast<uint8_t>(i);
@@ -224,7 +256,7 @@ void AppendFamilies(std::vector<BoardLine> &lines, const ScoreTable &table, size
 
 void AppendAward(std::vector<BoardLine> &lines, const ScoreTable &table, Award award)
 {
-	lines.push_back({ "", std::string(AwardName(award)), UiFlags::ColorBlue });
+	lines.push_back({ "", std::string(AwardName(award)), UiFlags::ColorBlue, {}, true });
 	const std::vector<score::RankEntry> ranks = score::RankAward(table, award);
 	if (ranks.empty())
 		lines.push_back({ "", std::string(_("Nobody")) });
@@ -232,10 +264,11 @@ void AppendAward(std::vector<BoardLine> &lines, const ScoreTable &table, Award a
 		std::string text = entry.tied()
 		    ? FormatRuntime(_("tied: {:s} at {:d}, no points"), JoinRows(table, entry.rows, ", "), entry.count)
 		    : FormatRuntime(_("{:s}, {:d}, +{:d}"), RowLabel(table, entry.rows[0]), entry.count, entry.points);
-		lines.push_back({ std::string(PlaceName(entry.place)), std::move(text) });
+		lines.push_back({ Ordinal(entry.place), std::move(text) });
 	}
 }
 
+/** The final table: a column per player (final order), banked + families + awards = total. */
 void AppendFinalTable(std::vector<BoardLine> &lines, const ScoreTable &table)
 {
 	const std::vector<score::RowTotal> totals = score::Totals(table);
@@ -249,40 +282,71 @@ void AppendFinalTable(std::vector<BoardLine> &lines, const ScoreTable &table)
 		lines.push_back({ "", FormatRuntime(_("{:s} wins!"), RowLabel(table, winners[0])), UiFlags::ColorWhitegold });
 	else if (!winners.empty())
 		lines.push_back({ "", FormatRuntime(_("Tied for first: {:s}"), JoinRows(table, winners, ", ")), UiFlags::ColorWhitegold });
-	lines.push_back({ "", std::string(_("banked + families + awards = total")), UiFlags::ColorBlue });
+	lines.push_back({});
+	lines.push_back(NamesRow(table, order));
+	BoardLine place { std::string(_("Place")) };
+	BoardLine banked { std::string(_("Banked points")) };
+	BoardLine families { std::string(_("Family leads")) };
+	BoardLine awards { std::string(_("Awards")) };
+	BoardLine total { std::string(_("Total")) };
 	for (const uint8_t row : order) {
 		const score::RowTotal &t = totals[row];
-		lines.push_back({ StrCat(t.place + 1, ". ", RowLabel(table, row)), StrCat(t.banked, " + ", t.families, " + ", t.awards, " = ", t.total) });
+		place.cells.push_back({ Ordinal(t.place), t.place == 0 ? UiFlags::ColorGold : UiFlags::ColorWhite });
+		banked.cells.push_back({ StrCat(t.banked) });
+		families.cells.push_back({ StrCat("+", t.families) });
+		awards.cells.push_back({ StrCat("+", t.awards) });
+		total.cells.push_back({ StrCat(t.total), UiFlags::ColorGold });
 	}
+	lines.push_back(std::move(place));
+	lines.push_back(std::move(banked));
+	lines.push_back(std::move(families));
+	lines.push_back(std::move(awards));
+	lines.push_back(std::move(total));
 }
 
-/** Every player's counts per family (final Families page). */
+/** Every player's kills per family; the leader's count carries the point (final Families page). */
 void AppendFamilyCounts(std::vector<BoardLine> &lines, const ScoreTable &table)
 {
+	const std::vector<uint8_t> order = score::OverallOrder(score::Totals(table));
+	lines.push_back(NamesRow(table, order));
 	const std::vector<score::FamilyLead> leads = score::FamilyLeads(table, ScoreFamilyOrder());
 	if (leads.empty())
 		lines.push_back({ "", std::string(_("No family was hunted.")) });
 	for (const score::FamilyLead &lead : leads) {
-		std::string text;
-		for (size_t row = 0; row < table.rows.size(); row++) {
+		BoardLine line { std::string(ScoreFamilyName(lead.family)) };
+		for (const uint8_t row : order) {
 			const uint16_t count = lead.family < table.rows[row].family.size() ? table.rows[row].family[lead.family] : 0;
-			if (count == 0)
-				continue;
-			StrAppend(text, text.empty() ? "" : "   ", table.rows[row].name, " ", count);
+			if (!lead.tied() && lead.row == row)
+				line.cells.push_back({ StrCat(count, "  +", lead.points), UiFlags::ColorGold });
+			else
+				line.cells.push_back({ count == 0 ? std::string("-") : StrCat(count) });
 		}
-		lines.push_back({ std::string(ScoreFamilyName(lead.family)), std::move(text) });
+		lines.push_back(std::move(line));
 	}
 }
 
-/** Every player's count per award (final Awards page). */
+/** Every player's count per award with the points it earned (final Awards page). */
 void AppendAwardCounts(std::vector<BoardLine> &lines, const ScoreTable &table)
 {
+	const std::vector<uint8_t> order = score::OverallOrder(score::Totals(table));
+	lines.push_back(NamesRow(table, order));
 	for (size_t a = 0; a < score::NumAwards; a++) {
 		const auto award = static_cast<Award>(a);
-		std::string text;
-		for (const score::ScoreRow &row : table.rows)
-			StrAppend(text, text.empty() ? "" : "   ", row.name, " ", score::AwardCount(row, award));
-		lines.push_back({ std::string(AwardName(award)), std::move(text) });
+		const std::vector<score::RankEntry> ranks = score::RankAward(table, award);
+		BoardLine line { std::string(AwardName(award)) };
+		for (const uint8_t row : order) {
+			int points = 0;
+			for (const score::RankEntry &entry : ranks) {
+				if (!entry.tied() && entry.rows[0] == row)
+					points = entry.points;
+			}
+			const uint32_t count = score::AwardCount(table.rows[row], award);
+			if (points > 0)
+				line.cells.push_back({ StrCat(count, "  +", points), UiFlags::ColorGold });
+			else
+				line.cells.push_back({ StrCat(count) });
+		}
+		lines.push_back(std::move(line));
 	}
 }
 
@@ -294,7 +358,7 @@ std::vector<BoardLine> RevealLines(const ScoreTable &table, const RevealStep &st
 		AppendBanked(lines, table);
 		break;
 	case RevealStepKind::Families:
-		lines.push_back({ "", std::string(_("Most kills in a monster family:")), UiFlags::ColorBlue });
+		lines.push_back({ "", std::string(_("Most kills in a monster family:")), UiFlags::ColorBlue, {}, true });
 		AppendFamilies(lines, table, step.first, step.count);
 		break;
 	case RevealStepKind::Award:
@@ -324,13 +388,13 @@ std::vector<BoardLine> EndLines(const ScoreTable &table)
 	return lines;
 }
 
-/** "Anna 12   Bo 9" under a reveal step: each total counting up as the steps reveal points. */
+/** "Anna 12   Bo 9" during the reveal: each total counting up as the steps reveal points. */
 std::string RunningTotalsText(const ScoreTable &table, const std::vector<RevealStep> &steps)
 {
 	const std::vector<int32_t> running = score::RunningTotals(table, ScoreFamilyOrder(), steps, RevealIndex + 1);
 	std::string out;
 	for (size_t row = 0; row < table.rows.size(); row++)
-		StrAppend(out, out.empty() ? "" : "    ", table.rows[row].name, " ", running[row]);
+		StrAppend(out, out.empty() ? "" : "      ", table.rows[row].name, " ", running[row]);
 	return out;
 }
 
@@ -355,6 +419,44 @@ void SkipReveal()
 	SkipLines = 0;
 }
 
+void DrawBox(const Surface &out, const Rectangle &box)
+{
+	// Twice half transparent: dark enough to read over the dungeon, the game still shows through a little.
+	DrawHalfTransparentRectTo(out, box.position.x, box.position.y, box.size.width, box.size.height);
+	DrawHalfTransparentRectTo(out, box.position.x, box.position.y, box.size.width, box.size.height);
+	UnsafeDrawBorder2px(out, box, BorderColor);
+}
+
+void DrawLines(const Surface &out, const std::vector<BoardLine> &lines, Rectangle area)
+{
+	const int lineHeight = LineHeight();
+	const int visible = std::max(1, area.size.height / lineHeight);
+	const size_t maxSkip = lines.size() > static_cast<size_t>(visible) ? lines.size() - visible : 0;
+	SkipLines = std::min(SkipLines, maxSkip);
+	for (int i = 0; i < visible; i++) {
+		const size_t index = i + SkipLines;
+		if (index >= lines.size())
+			break;
+		const BoardLine &line = lines[index];
+		const int y = area.position.y + (i * lineHeight);
+		const int x = area.position.x;
+		if (!line.cells.empty()) {
+			if (!line.label.empty())
+				DrawString(out, line.label, { { x, y }, { LabelWidth, lineHeight } }, { .flags = UiFlags::ColorWhitegold });
+			const int columns = static_cast<int>(line.cells.size());
+			const int columnWidth = std::min(MaxColumnWidth, (area.size.width - LabelWidth) / std::max(columns, 1));
+			for (int c = 0; c < columns; c++) {
+				DrawString(out, line.cells[c].text, { { x + LabelWidth + (c * columnWidth), y }, { columnWidth - 8, lineHeight } }, { .flags = line.cells[c].color });
+			}
+		} else if (line.label.empty()) {
+			DrawString(out, line.text, { { x, y }, { area.size.width, lineHeight } }, { .flags = line.color });
+		} else {
+			DrawString(out, line.label, { { x, y }, { LabelWidth, lineHeight } }, { .flags = UiFlags::ColorWhitegold });
+			DrawString(out, line.text, { { x + LabelWidth, y }, { area.size.width - LabelWidth, lineHeight } }, { .flags = line.color });
+		}
+	}
+}
+
 } // namespace
 
 void ScoreBoardStartReveal()
@@ -376,7 +478,6 @@ void ScoreBoardReset()
 	ScoreBoardFlag = false;
 	Revealing = false;
 	RevealIndex = 0;
-	LivePage = Page::Standings;
 	EndPage = FinalPage::Table;
 	SkipLines = 0;
 }
@@ -416,14 +517,13 @@ void ScoreBoardKey(int direction)
 		SkipLines++;
 		break;
 	case 2:
-	case 3: {
-		const int step = direction == 2 ? -1 : 1;
-		if (ended)
+	case 3:
+		if (ended) {
+			const int step = direction == 2 ? -1 : 1;
 			EndPage = static_cast<FinalPage>((static_cast<int>(EndPage) + 3 + step) % 3);
-		else
-			LivePage = LivePage == Page::Standings ? Page::Families : Page::Standings;
-		SkipLines = 0;
-	} break;
+			SkipLines = 0;
+		}
+		break;
 	default:
 		break;
 	}
@@ -432,13 +532,12 @@ void ScoreBoardKey(int direction)
 void DrawScoreBoard(const Surface &out)
 {
 	const ScoreTable *table = ScoreTableIfAny();
-	DrawSTextHelp();
-	DrawQTextBack(out);
+	const Rectangle box = BoardRect();
+	DrawBox(out, box);
 
-	const Point uiPosition = GetUIRectangle().position;
 	const int lineHeight = LineHeight();
-	const int sx = uiPosition.x + PaddingLeft;
-	const int sy = uiPosition.y;
+	const int x = box.position.x + Padding;
+	const int width = box.size.width - (2 * Padding);
 
 	std::string title;
 	std::vector<BoardLine> lines;
@@ -448,9 +547,9 @@ void DrawScoreBoard(const Surface &out)
 		title = _("Score Board");
 		lines.push_back({ "", std::string(_("The score table has not arrived yet.")) });
 	} else if (table->ended == EndReason::None) {
-		title = LivePage == Page::Standings ? _("Score Board: places") : _("Score Board: family leads");
+		title = _("Score Board");
 		lines = LiveLines(*table);
-		footer = _("Left/right: page. Counts are revealed when the game ends.");
+		footer = _("Places and banked points only; the counts are revealed when the game ends. Up/down: scroll.");
 	} else {
 		const std::vector<RevealStep> steps = score::BuildRevealSteps(*table, ScoreFamilyOrder());
 		AdvanceReveal(steps.size());
@@ -476,36 +575,22 @@ void DrawScoreBoard(const Surface &out)
 		}
 	}
 
-	DrawString(out, title, { { sx, sy + PaddingTop + 12 }, { ContentTextWidth, lineHeight } }, { .flags = UiFlags::ColorWhitegold | UiFlags::AlignCenter });
-	const int titleBottom = sy + HeaderHeight();
-	DrawSLine(out, titleBottom);
-
-	int visible = NumVisibleLines();
-	int contentY = titleBottom + 6 + 12;
+	int y = box.position.y + Padding;
+	DrawString(out, title, { { x, y }, { width, lineHeight } }, { .flags = UiFlags::ColorWhitegold | UiFlags::AlignCenter });
+	y += lineHeight + 6;
+	DrawHorizontalLine(out, { x, y }, width, RuleColor);
+	y += 8;
 	if (!totalsLine.empty()) {
-		// The totals counting up go at the top of the box: the chat lines of the end are drawn over its bottom.
-		DrawString(out, totalsLine, { { sx, contentY }, { ContentTextWidth, lineHeight } }, { .flags = UiFlags::ColorGold | UiFlags::AlignCenter });
-		contentY += lineHeight + (lineHeight / 2);
-		visible -= 2;
+		// The totals counting up go at the top of the box: the chat lines of the end are drawn over the bottom of the screen.
+		DrawString(out, totalsLine, { { x, y }, { width, lineHeight } }, { .flags = UiFlags::ColorGold | UiFlags::AlignCenter });
+		y += lineHeight + (lineHeight / 2);
 	}
-	const size_t maxSkip = lines.size() > static_cast<size_t>(visible) ? lines.size() - visible : 0;
-	SkipLines = std::min(SkipLines, maxSkip);
-	for (int i = 0; i < visible; i++) {
-		const size_t index = i + SkipLines;
-		if (index >= lines.size())
-			break;
-		const BoardLine &line = lines[index];
-		const int y = contentY + (i * lineHeight);
-		if (line.label.empty()) {
-			DrawString(out, line.text, { { sx, y }, { ContentTextWidth, lineHeight } }, { .flags = line.color });
-		} else {
-			DrawString(out, line.label, { { sx, y }, { LabelWidth, lineHeight } }, { .flags = UiFlags::ColorWhitegold });
-			DrawString(out, line.text, { { sx + LabelWidth, y }, { ContentTextWidth - LabelWidth, lineHeight } }, { .flags = line.color });
-		}
+	const int footerY = box.position.y + box.size.height - Padding - lineHeight;
+	DrawLines(out, lines, { { x, y }, { width, footerY - 6 - y } });
+	if (!footer.empty()) {
+		DrawHorizontalLine(out, { x, footerY - 4 }, width, RuleColor);
+		DrawString(out, footer, { { x, footerY }, { width, lineHeight } }, { .flags = UiFlags::ColorWhitegold | UiFlags::AlignCenter });
 	}
-	const int footerY = sy + PaddingTop + PanelHeight - 12 - lineHeight;
-	if (!footer.empty())
-		DrawString(out, footer, { { sx, footerY }, { ContentTextWidth, lineHeight } }, { .flags = UiFlags::ColorWhitegold | UiFlags::AlignCenter });
 }
 
 } // namespace devilution

@@ -254,6 +254,36 @@ struct RowTotal {
 	uint8_t place = 0;
 };
 
+/** Where one row stands in one ranked award during play: a place, or none. Never a count. */
+struct LivePlace {
+	/** 0 = first, 1 = second, 2 = third; NoPlace when the row has no place. */
+	uint8_t place = 0xFF;
+	bool tied = false;
+	[[nodiscard]] bool placed() const { return place != 0xFF; }
+};
+
+/** One row of the live board: what everyone may see during play (Peter 2026-11-20): places, plus the banked points. */
+struct LiveRow {
+	uint8_t row = NoRow;
+	/** 0-based overall place (totals as if the game ended now); equal totals share it. */
+	uint8_t overallPlace = 0;
+	/** Banked points (uniques, Diablo, player-kill transfers) are public: their events are announced in chat. */
+	int32_t banked = 0;
+	std::array<LivePlace, NumAwards> awards {};
+	bool left = false;
+};
+
+/** The live board, rows in overall order. Holds no counter (kills, gold, potions, identified, PvP kills) by construction. */
+std::vector<LiveRow> LiveBoard(const ScoreTable &table);
+
+/** Live family leads: per family with kills (in the given order), the rows at the top; one row = the leader, more = tied. */
+struct LiveFamily {
+	uint8_t family = NoFamily;
+	std::vector<uint8_t> rows;
+	[[nodiscard]] bool tied() const { return rows.size() > 1; }
+};
+std::vector<LiveFamily> LiveFamilies(const ScoreTable &table, const std::vector<uint8_t> &familyOrder);
+
 /** Totals as if the game ended now. */
 std::vector<RowTotal> Totals(const ScoreTable &table);
 /** Row indices by total (highest first), ties in row order. */

@@ -915,7 +915,7 @@ std::vector<std::string> ScoreHelpLines()
 	const ScoreValues values = State.haveTable ? State.table.values : ValuesFromOptions();
 	lines.emplace_back(_("$Scoring (this game):"));
 	const std::string_view boardKey = GetOptions().Keymapper.KeyNameForAction("ScoreBoard");
-	lines.emplace_back(FormatRuntime(_("The host keeps a score. The score board ({:s}) shows the places during play; the counts behind them are shown only when the game ends."), boardKey.empty() ? std::string_view("-") : boardKey));
+	lines.emplace_back(FormatRuntime(_("The host keeps a score. During play the score board ({:s}) shows each player's banked points and their places (overall, in each award and in each monster family); the counts behind the places are shown only when the game ends."), boardKey.empty() ? std::string_view("-") : boardKey));
 	if (values.uniqueKill != 0)
 		lines.emplace_back(FormatRuntime(ngettext("Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} point.", "Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} points.", values.uniqueKill), values.uniqueKill));
 	if (values.diabloKill != 0)

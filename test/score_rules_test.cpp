@@ -321,6 +321,46 @@ TEST(ScoreRules, TotalsAndPlaces)
 	EXPECT_EQ(tied[1].place, 2);
 }
 
+TEST(ScoreRules, LiveBoardShowsBankedAndPlacesOnly)
+{
+	ScoreTable table = TableWith({ "A", "B", "C" });
+	table.rows[0].banked = 2;
+	table.rows[1].banked = 7;
+	table.rows[2].banked = -1;
+	table.rows[2].slot = NoSlot; // C left
+	SetCounts(table, Award::Gold, { 300, 300, 50 });
+	SetCounts(table, Award::Kills, { 0, 4, 9 });
+	table.rows[0].family = { 3, 0, 0, 0 };
+	table.rows[1].family = { 3, 1, 0, 0 };
+	const auto live = LiveBoard(table);
+	ASSERT_EQ(live.size(), 3U);
+	// B: banked 7 + kills second 3 + family 1 lead 1 = 11; C: -1 + gold third 1 + kills first 5 = 5; A: 2.
+	EXPECT_EQ(live[0].row, 1);
+	EXPECT_EQ(live[0].banked, 7);
+	EXPECT_EQ(live[0].overallPlace, 0);
+	EXPECT_EQ(live[1].row, 2);
+	EXPECT_EQ(live[1].banked, -1);
+	EXPECT_TRUE(live[1].left);
+	EXPECT_EQ(live[2].row, 0);
+	EXPECT_EQ(live[2].banked, 2);
+	// Gold: A and B tied for first (no points, two ranks used up), C third.
+	const size_t gold = static_cast<size_t>(Award::Gold);
+	EXPECT_EQ(live[2].awards[gold].place, 0);
+	EXPECT_TRUE(live[2].awards[gold].tied);
+	EXPECT_EQ(live[0].awards[gold].place, 0);
+	EXPECT_EQ(live[1].awards[gold].place, 2);
+	EXPECT_FALSE(live[1].awards[gold].tied);
+	// Kills: a zero count has no place.
+	EXPECT_FALSE(live[2].awards[static_cast<size_t>(Award::Kills)].placed());
+	EXPECT_FALSE(live[0].awards[static_cast<size_t>(Award::Potions)].placed());
+	// Families: tied rows listed, a single leader alone; families without kills are not listed.
+	const auto families = LiveFamilies(table, { 0, 1, 2, 3 });
+	ASSERT_EQ(families.size(), 2U);
+	EXPECT_TRUE(families[0].tied());
+	EXPECT_EQ(families[0].rows, (std::vector<uint8_t> { 0, 1 }));
+	EXPECT_EQ(families[1].rows, std::vector<uint8_t> { 1 });
+}
+
 TEST(ScoreRules, RevealStepsAndRunningTotals)
 {
 	ScoreTable table = TableWith({ "A", "B" });

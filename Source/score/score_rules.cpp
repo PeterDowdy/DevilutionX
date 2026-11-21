@@ -588,6 +588,46 @@ std::vector<uint8_t> OverallOrder(const std::vector<RowTotal> &totals)
 	return order;
 }
 
+std::vector<LiveRow> LiveBoard(const ScoreTable &table)
+{
+	const std::vector<RowTotal> totals = Totals(table);
+	std::vector<LiveRow> rows;
+	for (const uint8_t r : OverallOrder(totals)) {
+		LiveRow live;
+		live.row = r;
+		live.overallPlace = totals[r].place;
+		live.banked = table.rows[r].banked;
+		live.left = table.rows[r].slot == NoSlot;
+		rows.push_back(live);
+	}
+	for (size_t a = 0; a < NumAwards; a++) {
+		for (const RankEntry &entry : RankAward(table, static_cast<Award>(a))) {
+			for (const uint8_t r : entry.rows) {
+				for (LiveRow &live : rows) {
+					if (live.row == r)
+						live.awards[a] = { entry.place, entry.tied() };
+				}
+			}
+		}
+	}
+	return rows;
+}
+
+std::vector<LiveFamily> LiveFamilies(const ScoreTable &table, const std::vector<uint8_t> &familyOrder)
+{
+	std::vector<LiveFamily> out;
+	for (const FamilyLead &lead : FamilyLeads(table, familyOrder)) {
+		LiveFamily family;
+		family.family = lead.family;
+		for (size_t r = 0; r < table.rows.size(); r++) {
+			if (lead.family < table.rows[r].family.size() && table.rows[r].family[lead.family] == lead.count)
+				family.rows.push_back(static_cast<uint8_t>(r));
+		}
+		out.push_back(std::move(family));
+	}
+	return out;
+}
+
 std::vector<RevealStep> BuildRevealSteps(const ScoreTable &table, const std::vector<uint8_t> &familyOrder)
 {
 	std::vector<RevealStep> steps;
