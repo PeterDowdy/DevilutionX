@@ -49,6 +49,7 @@
 #include "player.h"
 #include "qol/autopickup.h"
 #include "qol/stash.h"
+#include "score/score.h"
 #include "spells.h"
 #include "stores.h"
 #include "towners.h"
@@ -2716,6 +2717,8 @@ StartPlayerKill(Player &player, DeathReason deathReason)
 	}
 
 	if (&player == MyPlayer) {
+		if (ScoringActive())
+			ScoreOnLocalPlayerDeath(deathReason);
 		NetSendCmdParam1(true, CMD_PLRDEAD, static_cast<uint16_t>(deathReason));
 		gamemenu_off();
 	}

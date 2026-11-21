@@ -74,6 +74,9 @@ set(standalone_tests
 if(NOT USE_SDL1)
   list(APPEND standalone_tests text_render_integration_test)
 endif()
+if(DEVILUTIONX_SCORING)
+  list(APPEND standalone_tests score_rules_test)
+endif()
 set(benchmarks
   clx_render_benchmark
   crawl_benchmark
@@ -171,6 +174,9 @@ target_link_dependencies(path_test PRIVATE libdevilutionx_pathfinding libdevilut
 target_link_dependencies(vision_test PRIVATE libdevilutionx_vision)
 target_link_dependencies(path_benchmark PRIVATE libdevilutionx_pathfinding app_fatal_for_testing)
 target_link_dependencies(random_test PRIVATE libdevilutionx_random)
+if(DEVILUTIONX_SCORING)
+  target_link_dependencies(score_rules_test PRIVATE libdevilutionx_score_rules)
+endif()
 target_link_dependencies(static_vector_test PRIVATE libdevilutionx_random app_fatal_for_testing)
 target_link_dependencies(str_cat_test PRIVATE libdevilutionx_strings)
 if(DEVILUTIONX_SCREENSHOT_FORMAT STREQUAL DEVILUTIONX_SCREENSHOT_FORMAT_PNG AND NOT USE_SDL1)

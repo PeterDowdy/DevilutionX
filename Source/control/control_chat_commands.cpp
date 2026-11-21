@@ -5,6 +5,7 @@
 #include "engine/backbuffer_state.hpp"
 #include "inv.h"
 #include "levels/setmaps.h"
+#include "score/score.h"
 #include "storm/storm_net.hpp"
 #include "utils/algorithm/container.hpp"
 #include "utils/format.hpp"
@@ -38,6 +39,8 @@ std::string TextCmdHelp(const std::string_view parameter)
 		for (const TextCmdItem &textCmd : TextCmdList) {
 			StrAppend(ret, " ", _(textCmd.text));
 		}
+		if (ScoringActive())
+			StrAppend(ret, " /score");
 		return ret;
 	}
 	auto textCmdIterator = c_find_if(TextCmdList, [&](const TextCmdItem &elem) { return elem.text == parameter; });
@@ -261,6 +264,14 @@ bool CheckChatCommand(const std::string_view text)
 {
 	if (text.size() < 1 || text[0] != '/')
 		return false;
+
+#ifdef DEVILUTIONX_SCORING
+	// Only a command in games with scoring on.
+	if (ScoringActive() && (text == "/score" || text.starts_with("/score "))) {
+		ScoreChatCommand();
+		return true;
+	}
+#endif
 
 	auto textCmdIterator = c_find_if(TextCmdList, [&](const TextCmdItem &elem) { return text.find(elem.text) == 0 && (text.length() == elem.text.length() || text[elem.text.length()] == ' '); });
 	if (textCmdIterator == TextCmdList.end()) {

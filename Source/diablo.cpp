@@ -99,6 +99,7 @@
 #include "qol/xpbar.h"
 #include "quick_messages.hpp"
 #include "restrict.h"
+#include "score/score.h"
 #include "stores.h"
 #include "storm/storm_net.hpp"
 #include "storm/storm_svid.h"
@@ -1563,6 +1564,8 @@ void GameLogic()
 	sound_update();
 	CheckTriggers();
 	CheckQuests();
+	if (ScoringActive())
+		ScoreTick();
 	RedrawViewport();
 	pfile_update(false);
 

@@ -44,6 +44,7 @@
 #include "multi.h"
 #include "objects.h"
 #include "player.h"
+#include "score/score.h"
 #include "sound_effect_enums.h"
 #include "tables/itemdat.h"
 #include "tables/misdat.h"
@@ -520,6 +521,8 @@ void CheckMissileCol(Missile &missile, DamageType damageType, int minDamage, int
 			}
 		} else {
 			const DeathReason deathReason = missile.sourceType() == MissileSource::Player ? DeathReason::Player : DeathReason::MonsterOrTrap;
+			// Wall spells hit everyone: whose wall it was decides who killed (scoring).
+			const ScoreDamageSource scoreSource(missile.sourceType() == MissileSource::Player ? static_cast<uint8_t>(missile._misource) : 0xFF);
 			isPlayerHit = PlayerMHit(*player, nullptr, missile._midist, minDamage, maxDamage, missile._mitype, damageType, isDamageShifted, deathReason, &blocked);
 		}
 	}
@@ -1048,6 +1051,8 @@ bool MonsterTrapHit(Monster &monster, int mindam, int maxdam, int dist, MissileI
 		monster.hitPoints = 0;
 #endif
 	if (monster.hasNoLife()) {
+		if (ScoringActive())
+			ScoreOnMonsterDeath(monster, 0xFF); // a trap's kill is nobody's
 		MonsterDeath(monster, monster.direction, true);
 	} else if (resist) {
 		PlayEffect(monster, MonsterSound::Hit);

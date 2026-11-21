@@ -36,6 +36,9 @@
 #include "engine/sound_defs.hpp"
 #include "platform/locale.hpp"
 #include "quick_messages.hpp"
+#ifdef DEVILUTIONX_SCORING
+#include "score/score_rules.hpp"
+#endif
 #include "utils/algorithm/container.hpp"
 #include "utils/file_util.h"
 #include "utils/format.hpp"
@@ -848,6 +851,9 @@ GameplayOptions::GameplayOptions()
     , cowQuest("Cow Quest", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::OnlyHellfire, N_("Cow Quest"), N_("Enable Jersey's quest. Lester the farmer is replaced by the Complete Nut."), false)
     , friendlyFire("Friendly Fire", OptionEntryFlags::CantChangeInMultiPlayer, N_("Friendly Fire"), N_("Allow arrow/spell damage between players in multiplayer even when the friendly mode is on."), true)
     , multiplayerFullQuests("MultiplayerFullQuests", OptionEntryFlags::CantChangeInMultiPlayer, N_("Full quests in Multiplayer"), N_("Enables the full/uncut singleplayer version of quests."), false)
+#ifdef DEVILUTIONX_SCORING
+    , scoring("Scoring", OptionEntryFlags::CantChangeInMultiPlayer, N_("Scoring"), N_("Multiplayer games you host keep a score and a leader board (kills, uniques, gold, potions, identifying). Point values are in the [Scoring] section of diablo.ini."), false)
+#endif
     , testBard("Test Bard", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::OnlyHellfire, N_("Test Bard"), N_("Force the Bard character type to appear in the hero selection menu."), false)
     , testBarbarian("Test Barbarian", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::OnlyHellfire, N_("Test Barbarian"), N_("Force the Barbarian character type to appear in the hero selection menu."), false)
     , experienceBar("Experience Bar", OptionEntryFlags::None, N_("Experience Bar"), N_("Experience Bar is added to the UI at the bottom of the screen."), false)
@@ -893,6 +899,9 @@ std::vector<OptionEntryBase *> GameplayOptions::GetEntries()
 		&tickRate,
 		&friendlyFire,
 		&multiplayerFullQuests,
+#ifdef DEVILUTIONX_SCORING
+		&scoring,
+#endif
 		&randomizeQuests,
 		&theoQuest,
 		&cowQuest,
@@ -931,6 +940,26 @@ std::vector<OptionEntryBase *> GameplayOptions::GetEntries()
 		&skipLoadingScreenThresholdMs,
 	};
 }
+
+#ifdef DEVILUTIONX_SCORING
+ScoringOptions::ScoringOptions()
+    : OptionCategoryBase("Scoring", N_("Scoring"), N_("Multiplayer scoring point values"))
+{
+	const auto &settings = score::ValueSettings();
+	values.reserve(settings.size());
+	for (const score::ValueSetting &setting : settings) {
+		// The keys are string literals, so data() is NUL-terminated and lives as long as the program.
+		values.emplace_back(setting.key, OptionEntryFlags::Invisible, setting.key.data(), "", setting.defaultValue);
+	}
+}
+std::vector<OptionEntryBase *> ScoringOptions::GetEntries()
+{
+	std::vector<OptionEntryBase *> entries;
+	for (OptionEntryInt<int> &entry : values)
+		entries.push_back(&entry);
+	return entries;
+}
+#endif
 
 ControllerOptions::ControllerOptions()
     : OptionCategoryBase("Controller", N_("Controller"), N_("Controller Settings"))

@@ -416,6 +416,22 @@ enum _cmd_id : uint8_t {
 	//
 	// body (TCmdSpawnMonster)
 	CMD_SPAWNMONSTER,
+#ifdef DEVILUTIONX_SCORING
+	// Multiplayer scoring: a claim (monster kill, player kill, gold, potion, identified item,
+	// second-hand item, table request), sent to everyone; the score keeper decides.
+	// Never sent when scoring is off.
+	//
+	// body (TCmdScoreClaim, score/score.cpp)
+	CMD_SCORE_CLAIM,
+	// The score keeper's decision on a claim, numbered; applied in order by every client.
+	//
+	// body (TCmdScoreAward [+ hero name], score/score.cpp)
+	CMD_SCORE_AWARD,
+	// The whole score table (join, gap, new keeper, final), in chunks like the level deltas.
+	//
+	// body (TCmdPlrInfoHdr + table bytes)
+	CMD_SCORE_TABLE,
+#endif
 	// Fake command; set current player for succeeding mega pkt buffer messages.
 	//
 	// body (TFakeCmdPlr)
@@ -730,6 +746,8 @@ void DeltaClearLevel(uint8_t level);
 void delta_kill_monster(const Monster &monster, Point position, const Player &player);
 void delta_monster_hp(const Monster &monster, const Player &player);
 void delta_sync_monster(const TSyncMonster &monsterSync, uint8_t level);
+/** @brief Whether the monster was spawned after the level was made (golems, raised skeletons, ...), from the level delta. */
+bool DeltaIsSpawnedMonster(uint8_t level, size_t monsterId);
 uint8_t GetLevelForMultiplayer(const Player &player);
 bool IsValidLevelForMultiplayer(uint8_t level);
 bool IsValidLevel(uint8_t level, bool isSetLevel);

@@ -53,6 +53,7 @@
 #include "plrmsg.h"
 #include "portals/validation.hpp"
 #include "quests/validation.hpp"
+#include "score/score.h"
 #include "spells.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
@@ -196,6 +197,11 @@ std::string_view CmdIdString(_cmd_id cmd)
 	case CMD_OPENHIVE: return "CMD_OPENHIVE";
 	case CMD_OPENGRAVE: return "CMD_OPENGRAVE";
 	case CMD_SPAWNMONSTER: return "CMD_SPAWNMONSTER";
+#ifdef DEVILUTIONX_SCORING
+	case CMD_SCORE_CLAIM: return "CMD_SCORE_CLAIM";
+	case CMD_SCORE_AWARD: return "CMD_SCORE_AWARD";
+	case CMD_SCORE_TABLE: return "CMD_SCORE_TABLE";
+#endif
 	case FAKE_CMD_SETID: return "FAKE_CMD_SETID";
 	case FAKE_CMD_DROPID: return "FAKE_CMD_DROPID";
 	case CMD_INVALID: return "CMD_INVALID";
@@ -2117,6 +2123,7 @@ size_t OnPlayerDamage(const TCmdDamage &message, Player &player)
 	Player &target = Players[message.bPlr];
 	if (&target == MyPlayer && leveltype != DTYPE_TOWN && gbBufferMsgs != 1) {
 		if (player.isOnActiveLevel() && damage <= 192000 && !target.hasNoLife()) {
+			const ScoreDamageSource scoreSource(player.getId());
 			ApplyPlrDamage(message.damageType, target, 0, 0, static_cast<int>(damage), DeathReason::Player);
 		}
 	}
@@ -2854,6 +2861,12 @@ void delta_kill_monster(const Monster &monster, Point position, const Player &pl
 	pD->hitPoints = 0;
 }
 
+bool DeltaIsSpawnedMonster(uint8_t level, size_t monsterId)
+{
+	const auto it = DeltaLevels.find(level);
+	return it != DeltaLevels.end() && it->second.spawnedMonsters.contains(monsterId);
+}
+
 void delta_monster_hp(const Monster &monster, const Player &player)
 {
 	if (!gbIsMultiplayer)
@@ -3524,6 +3537,19 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 		return OnOpenGrave(*pCmd);
 	case CMD_SPAWNMONSTER:
 		return HandleCmd(OnSpawnMonster, player, pCmd, maxCmdSize);
+#ifdef DEVILUTIONX_SCORING
+	case CMD_SCORE_CLAIM:
+	case CMD_SCORE_AWARD: {
+		// Kept in order with everything else while a joiner waits for the level data, like the other commands.
+		const bool buffer = gbBufferMsgs == 1;
+		const size_t size = pCmd->bCmd == CMD_SCORE_CLAIM ? ScoreOnClaimCmd(pnum, pCmd, maxCmdSize, !buffer) : ScoreOnAwardCmd(pnum, pCmd, maxCmdSize, !buffer);
+		if (buffer && size != 0)
+			BufferMessage(pnum, pCmd, size);
+		return size;
+	}
+	case CMD_SCORE_TABLE:
+		return ScoreOnTableCmd(pnum, pCmd, maxCmdSize);
+#endif
 	default:
 		break;
 	}

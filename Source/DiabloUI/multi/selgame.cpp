@@ -91,14 +91,26 @@ void selgame_Free()
 bool IsGameCompatible(const GameData &data)
 {
 	// TODO GetGameId is now only used cosmetic (gamelist icon), we need to check the enabled mods in addition to the below check
+	// SCORING: the scoring commands (CMD_SCORE_*) and GameData::scoring need the remaster's own version id here,
+	// shared with the 8-player work; it is not bumped by the scoring patches (the 8-player job owns it).
 	return data.versionMajor == PROJECT_VERSION_MAJOR
 	    && data.versionMinor == PROJECT_VERSION_MINOR
 	    && data.versionPatch == PROJECT_VERSION_PATCH
-	    && data.isSpawn == (gbIsSpawn ? 1 : 0);
+	    && data.isSpawn == (gbIsSpawn ? 1 : 0)
+#ifndef DEVILUTIONX_SCORING
+	    // A build without scoring cannot take part in a scored game: its kills would go unscored and it
+	    // would drop players for sending commands it does not know.
+	    && data.scoring == 0
+#endif
+	    ;
 }
 
 static std::string GetErrorMessageIncompatibility(const GameData &data)
 {
+#ifndef DEVILUTIONX_SCORING
+	if (data.scoring != 0)
+		return std::string(_("The host keeps a score in this game, and this build has no scoring."));
+#endif
 	if (data.isSpawn != (gbIsSpawn ? 1 : 0)) {
 		if (data.isSpawn)
 			return std::string(_("The host is running the shareware edition."));
@@ -267,6 +279,10 @@ void selgame_GameSelection_Focus(size_t value)
 				break;
 			}
 			infoString += '\n';
+			if (gameInfo.gameData.scoring != 0) {
+				infoString.append(gameInfo.gameData.scoringCustom != 0 ? _("Scoring: on (custom)") : _("Scoring: on"));
+				infoString += '\n';
+			}
 			infoString.append(_("Players: "));
 			for (const auto &playerName : gameInfo.players) {
 				infoString.append(playerName);

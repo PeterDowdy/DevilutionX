@@ -38,6 +38,7 @@
 #include "players/validation.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
+#include "score/score.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
 #include "tmsg.h"
@@ -273,6 +274,8 @@ void PlayerLeftMsg(Player &player, bool left)
 	if (!player.plractive)
 		return;
 
+	if (left && ScoringActive())
+		ScoreOnPlayerLeft(player);
 	FixPlrWalkTags(player);
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
@@ -616,6 +619,7 @@ void InitGameInfo()
 	sgGameInitInfo.bCowQuest = *options.Gameplay.cowQuest ? 1 : 0;
 	sgGameInitInfo.bFriendlyFire = *options.Gameplay.friendlyFire ? 1 : 0;
 	sgGameInitInfo.fullQuests = (!gbIsMultiplayer || *options.Gameplay.multiplayerFullQuests) ? 1 : 0;
+	ScoreInitGameInfo(sgGameInitInfo);
 }
 
 void NetSendLoPri(uint8_t playerId, const std::byte *data, size_t size)
@@ -822,6 +826,7 @@ void NetClose()
 	tmsg_cleanup();
 	UnregisterNetEventHandlers();
 	SNetLeaveGame(leaveinfo_t::LEAVE_EXIT);
+	ScoreOnGameEnd();
 	if (gbIsMultiplayer)
 		SDL_Delay(2000);
 	if (!demo::IsRunning()) {
@@ -905,6 +910,9 @@ bool NetInit(bool bSinglePlayer)
 		    FormatGameSeed(sgGameInitInfo.gameSeed));
 	}
 
+	// The creator never waited for level data (no turn bit); it starts the score table.
+	ScoreOnGameStart(!sgbPlayerTurnBitTbl[MyPlayerId]);
+
 	return true;
 }
 
@@ -950,6 +958,8 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	ResetPlayerGFX(player);
 	player.plractive = true;
 	gbActivePlayers++;
+	if (ScoringActive())
+		ScoreOnPlayerActive(player);
 
 	std::string_view szEvent;
 	if (sgbPlayerTurnBitTbl[pnum]) {

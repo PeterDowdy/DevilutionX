@@ -585,6 +585,10 @@ struct GameplayOptions : OptionCategoryBase {
 	OptionEntryBoolean friendlyFire;
 	/** @brief Enables the full/uncut singleplayer version of quests. */
 	OptionEntryBoolean multiplayerFullQuests;
+#ifdef DEVILUTIONX_SCORING
+	/** @brief Score kills, gold, potions and identifying in multiplayer games this player hosts (point values in [Scoring]). */
+	OptionEntryBoolean scoring;
+#endif
 	/** @brief Enable the bard hero class. */
 	OptionEntryBoolean testBard;
 	/** @brief Enable the babarian hero class. */
@@ -653,6 +657,17 @@ struct GameplayOptions : OptionCategoryBase {
 	 */
 	OptionEntryInt<int> skipLoadingScreenThresholdMs;
 };
+
+#ifdef DEVILUTIONX_SCORING
+/** @brief The point values of the multiplayer scoring: ini only ([Scoring]), never listed on a settings screen. Read by the host when it creates a game. */
+struct ScoringOptions : OptionCategoryBase {
+	ScoringOptions();
+	std::vector<OptionEntryBase *> GetEntries() override;
+
+	/** @brief One entry per score::ValueSettings() row, in that order. */
+	std::vector<OptionEntryInt<int>> values;
+};
+#endif
 
 struct ControllerOptions : OptionCategoryBase {
 	ControllerOptions();
@@ -881,6 +896,9 @@ struct Options {
 	HellfireOptions Hellfire;
 	AudioOptions Audio;
 	GameplayOptions Gameplay;
+#ifdef DEVILUTIONX_SCORING
+	ScoringOptions Scoring;
+#endif
 	GraphicsOptions Graphics;
 	ControllerOptions Controller;
 	NetworkOptions Network;
@@ -902,6 +920,9 @@ struct Options {
 			&Diablo,
 			&Hellfire,
 			&Gameplay,
+#ifdef DEVILUTIONX_SCORING
+			&Scoring,
+#endif
 			&Controller,
 			&Network,
 			&Chat,

@@ -14,7 +14,14 @@ struct GameData {
 	 * (edition + version + mod config), unlike `programid` which is now cosmetic branding.
 	 */
 	uint8_t isSpawn;
-	uint8_t reserved[3];
+	/**
+	 * Multiplayer scoring is on in this game (copied by the host from its Gameplay option "Scoring").
+	 * Was a reserved byte: 0 means off, which is what builds without scoring send.
+	 */
+	uint8_t scoring;
+	/** The host's [Scoring] point values differ from the defaults (shown in the game list as "custom"). */
+	uint8_t scoringCustom;
+	uint8_t reserved;
 	/** Branding id (e.g. "DRTL"/"HRTL"/"DXMD") for display only. A mod may change it via its manifest. */
 	uint32_t programid;
 	uint8_t versionMajor;

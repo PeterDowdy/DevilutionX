@@ -178,6 +178,7 @@ mark_as_advanced(DEVILUTIONX_PALETTE_TRANSPARENCY_BLACK_16_LUT)
 
 # Additional features
 option(DISABLE_DEMOMODE "Disable demo mode support" OFF)
+option(DEVILUTIONX_SCORING "Multiplayer scoring and leader board (still switched per game by the host)" ON)
 option(DISCORD_INTEGRATION "Build with Discord SDK for rich presence support" OFF)
 option(SCREEN_READER_INTEGRATION "Build with screen reader support" OFF)
 mark_as_advanced(SCREEN_READER_INTEGRATION)
