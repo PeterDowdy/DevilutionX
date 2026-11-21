@@ -109,5 +109,14 @@ private:
 	std::expected<void, PacketError> HandleEchoReply(packet &pkt);
 };
 
+/** @brief "DXRP" + RemasterProtocol (multi.h): what a joiner sends as its join request's info. */
+buffer_t ProtocolJoinTag();
+
+/**
+ * @brief Takes the protocol tag off the end of a join accept's game info.
+ * @return false when the tag is missing (a stock host) or names another protocol; `info` is then left as it was.
+ */
+bool TakeProtocolJoinTag(buffer_t &info);
+
 } // namespace net
 } // namespace devilution

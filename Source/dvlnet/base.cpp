@@ -13,6 +13,7 @@
 #endif
 
 #include "player.h"
+#include "utils/language.h"
 
 namespace devilution {
 namespace net {
@@ -76,11 +77,31 @@ std::expected<void, PacketError> base::SendEchoRequest(plr_t player)
 	return send(**pkt);
 }
 
+buffer_t ProtocolJoinTag()
+{
+	return buffer_t { 'D', 'X', 'R', 'P', RemasterProtocol };
+}
+
+bool TakeProtocolJoinTag(buffer_t &info)
+{
+	const buffer_t tag = ProtocolJoinTag();
+	if (info.size() < tag.size() || !std::equal(tag.begin(), tag.end(), info.end() - static_cast<std::ptrdiff_t>(tag.size())))
+		return false;
+	info.resize(info.size() - tag.size());
+	return true;
+}
+
 std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 {
 	if (plr_self != PLR_BROADCAST) {
 		return {}; // already have player id
 	}
+	std::expected<const buffer_t *, PacketError> infoPkt = pkt.Info();
+	if (!infoPkt.has_value())
+		return std::unexpected(infoPkt.error());
+	buffer_t info = **infoPkt;
+	if (!TakeProtocolJoinTag(info))
+		return std::unexpected(PacketError(_("The host runs another build of the game (not the same multiplayer protocol).")));
 	if (pkt.Cookie() == cookie_self) {
 		std::expected<plr_t, PacketError> newPlayerPkt = pkt.NewPlayer();
 		if (!newPlayerPkt.has_value())
@@ -88,10 +109,6 @@ std::expected<void, PacketError> base::HandleAccept(packet &pkt)
 		plr_self = *std::move(newPlayerPkt);
 		Connect(plr_self);
 	}
-	std::expected<const buffer_t *, PacketError> infoPkt = pkt.Info();
-	if (!infoPkt.has_value())
-		return std::unexpected(infoPkt.error());
-	const buffer_t &info = **infoPkt;
 	if (game_init_info != info) {
 		if (info.size() != sizeof(GameData)) {
 			ABORT();

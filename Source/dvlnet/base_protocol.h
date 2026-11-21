@@ -158,7 +158,7 @@ std::expected<void, PacketError> base_protocol<P>::wait_join()
 {
 	cookie_self = packet_out::GenerateCookie();
 	std::expected<std::unique_ptr<packet>, PacketError> pkt
-	    = pktfty->make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_self, game_init_info);
+	    = pktfty->make_packet<PT_JOIN_REQUEST>(PLR_BROADCAST, PLR_MASTER, cookie_self, game_init_info.empty() ? ProtocolJoinTag() : game_init_info);
 	if (!pkt.has_value()) {
 		return std::unexpected(pkt.error());
 	}
@@ -318,6 +318,12 @@ void base_protocol<P>::recv()
 template <class P>
 std::expected<void, PacketError> base_protocol<P>::handle_join_request(packet &inPkt, endpoint_t sender)
 {
+	// A joiner with another multiplayer protocol (stock builds send no info) gets no slot.
+	std::expected<const buffer_t *, PacketError> joinInfo = inPkt.Info();
+	if (!joinInfo.has_value())
+		return std::unexpected(joinInfo.error());
+	if (**joinInfo != ProtocolJoinTag())
+		return {};
 	plr_t i;
 	for (i = 0; i < Players.size(); ++i) {
 		Peer &peer = peers[i];
@@ -356,7 +362,12 @@ std::expected<void, PacketError> base_protocol<P>::handle_join_request(packet &i
 	if (!cookie.has_value())
 		return std::unexpected(cookie.error());
 	std::expected<std::unique_ptr<packet>, PacketError> pkt
-	    = pktfty->make_packet<PT_JOIN_ACCEPT>(plr_self, PLR_BROADCAST, *cookie, i, game_init_info);
+	    = pktfty->make_packet<PT_JOIN_ACCEPT>(plr_self, PLR_BROADCAST, *cookie, i, [this] {
+		      buffer_t info = game_init_info;
+		      const buffer_t tag = ProtocolJoinTag();
+		      info.insert(info.end(), tag.begin(), tag.end());
+		      return info;
+	      }());
 	if (!pkt.has_value())
 		return std::unexpected(pkt.error());
 	std::expected<void, PacketError> result = proto.send(sender, (*pkt)->Data());

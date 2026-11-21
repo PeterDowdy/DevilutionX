@@ -125,11 +125,14 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 	if (newplr == PLR_BROADCAST)
 		return std::unexpected(ServerError());
 
+	std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
+	if (!pktInfo.has_value())
+		return std::unexpected(pktInfo.error());
 	if (Empty()) {
-		std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
-		if (!pktInfo.has_value())
-			return std::unexpected(pktInfo.error());
 		game_init_info = **pktInfo;
+	} else if (**pktInfo != ProtocolJoinTag()) {
+		// A build with another protocol (a stock client sends nothing here): refused before it gets a player slot.
+		return std::unexpected(PacketError("join refused: the joiner runs another multiplayer protocol"));
 	}
 
 	for (plr_t player = 0; player < Players.size(); player++) {
@@ -146,7 +149,12 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 	std::expected<void, PacketError> result
 	    = inPkt.Cookie()
-	          .and_then([&](cookie_t &&cookie) { return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, game_init_info); })
+	          .and_then([&](cookie_t &&cookie) {
+		          buffer_t info = game_init_info;
+		          const buffer_t tag = ProtocolJoinTag();
+		          info.insert(info.end(), tag.begin(), tag.end());
+		          return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, info);
+	          })
 	          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(con, *pkt); });
 	if (!result.has_value())
 		return result;
