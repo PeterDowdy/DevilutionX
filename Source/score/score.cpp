@@ -36,6 +36,7 @@
 #include "options.h"
 #include "player.h"
 #include "plrmsg.h"
+#include "score/score_internal.hpp"
 #include "score/score_rules.hpp"
 #include "tables/monstdat.h"
 #include "utils/endian_swap.hpp"
@@ -277,6 +278,13 @@ std::string_view RowName(uint8_t row)
 	return _("Nobody");
 }
 
+/** A scoring chat line (also in the log, so test runs can read what each client announced). */
+void ScoreChat(std::string_view text)
+{
+	EventPlrMsg(text);
+	LogInfo("Scoring: {}", text);
+}
+
 void SendClaim(Claim claim)
 {
 	TCmdScoreClaim message {};
@@ -357,11 +365,11 @@ void AnnounceFinal()
 {
 	const ScoreTable &table = State.table;
 	if (table.ended == EndReason::Host) {
-		EventPlrMsg(_("The host ended the game. The scores are final."));
+		ScoreChat(_("The host ended the game. The scores are final."));
 	} else if (table.endRow != NoRow) {
-		EventPlrMsg(FormatRuntime(_("{:s} killed Diablo. The scores are final."), RowName(table.endRow)));
+		ScoreChat(FormatRuntime(_("{:s} killed Diablo. The scores are final."), RowName(table.endRow)));
 	} else {
-		EventPlrMsg(_("Diablo is dead. The scores are final."));
+		ScoreChat(_("Diablo is dead. The scores are final."));
 	}
 	const std::vector<score::RowTotal> totals = score::Totals(table);
 	std::vector<std::string_view> winners;
@@ -373,14 +381,18 @@ void AnnounceFinal()
 		}
 	}
 	if (winners.size() == 1) {
-		EventPlrMsg(FormatRuntime(ngettext("{:s} wins with {:d} point.", "{:s} wins with {:d} points.", best), winners[0], best));
+		ScoreChat(FormatRuntime(ngettext("{:s} wins with {:d} point.", "{:s} wins with {:d} points.", best), winners[0], best));
 	} else if (!winners.empty()) {
 		std::string names;
 		for (const std::string_view name : winners)
 			StrAppend(names, names.empty() ? "" : ", ", name);
-		EventPlrMsg(FormatRuntime(ngettext("Tied for first: {:s} with {:d} point.", "Tied for first: {:s} with {:d} points.", best), names, best));
+		ScoreChat(FormatRuntime(ngettext("Tied for first: {:s} with {:d} point.", "Tied for first: {:s} with {:d} points.", best), names, best));
 	}
-	EventPlrMsg(_("Type /score or open the score board to see the scores."));
+	const std::string_view key = GetOptions().Keymapper.KeyNameForAction("ScoreBoard");
+	if (!key.empty())
+		ScoreChat(FormatRuntime(_("Press {:s} to see the scores."), key));
+	else
+		ScoreChat(_("Type /score to see the places."));
 }
 
 void ForgetPending(uint8_t claimSlot, uint16_t claimSeq)
@@ -396,15 +408,15 @@ void AnnounceAward(const AwardMsg &award)
 		if (award.banked <= 0 || award.row == NoRow)
 			return;
 		if ((award.flags & score::ClaimDiablo) != 0) {
-			EventPlrMsg(FormatRuntime(_("{:s} killed {:s}: +{:d}"), RowName(award.row), pgettext("monster", MonstersData[MT_DIABLO].name), award.banked));
+			ScoreChat(FormatRuntime(_("{:s} killed {:s}: +{:d}"), RowName(award.row), _("Diablo"), award.banked));
 		} else if (award.uniqueIdx < UniqueMonstersData.size()) {
-			EventPlrMsg(FormatRuntime(_("{:s} killed {:s}: +{:d}"), RowName(award.row), pgettext("monster", UniqueMonstersData[award.uniqueIdx].mName), award.banked));
+			ScoreChat(FormatRuntime(_("{:s} killed {:s}: +{:d}"), RowName(award.row), pgettext("monster", UniqueMonstersData[award.uniqueIdx].mName), award.banked));
 		}
 		break;
 	case AwardKind::PlayerKill:
 		if (award.banked <= 0)
 			return;
-		EventPlrMsg(FormatRuntime(ngettext("{:s} killed {:s} and took {:d} point", "{:s} killed {:s} and took {:d} points", award.banked), RowName(award.row), RowName(award.row2), award.banked));
+		ScoreChat(FormatRuntime(ngettext("{:s} killed {:s} and took {:d} point", "{:s} killed {:s} and took {:d} points", award.banked), RowName(award.row), RowName(award.row2), award.banked));
 		break;
 	default:
 		break;
@@ -499,6 +511,7 @@ void AcceptTable(ScoreTable &&table)
 void OnScoringClosed()
 {
 	AnnounceFinal();
+	ScoreBoardStartReveal();
 }
 
 } // namespace
@@ -545,7 +558,7 @@ void ScoreOnGameStart(bool isCreator)
 void ScoreOnGameEnd()
 {
 	State = {};
-	ScoreBoardFlag = false;
+	ScoreBoardReset();
 }
 
 void ScoreOnPlayerActive(const Player &player)
@@ -849,7 +862,7 @@ void ScoreChatCommand()
 	if (!ScoringActive())
 		return;
 	if (!State.haveTable) {
-		EventPlrMsg(_("The score table has not arrived yet."));
+		ScoreChat(_("The score table has not arrived yet."));
 		return;
 	}
 	const ScoreTable &table = State.table;
@@ -857,7 +870,7 @@ void ScoreChatCommand()
 	std::string line = std::string(_("Standings:"));
 	for (const uint8_t row : score::OverallOrder(totals))
 		StrAppend(line, " ", totals[row].place + 1, ". ", table.rows[row].name);
-	EventPlrMsg(line);
+	ScoreChat(line);
 }
 
 bool ScoreCanEndGame()
@@ -874,6 +887,60 @@ void ScoreEndGameByHost()
 	award.value = static_cast<uint32_t>(EndReason::Host);
 	KeeperDecide(award);
 	BroadcastTable();
+}
+
+const score::ScoreTable *ScoreTableIfAny()
+{
+	return ScoringActive() && State.haveTable ? &State.table : nullptr;
+}
+
+const std::vector<uint8_t> &ScoreFamilyOrder()
+{
+	return FamilyOrder;
+}
+
+std::string_view ScoreFamilyName(uint8_t family)
+{
+	if (family >= Families.size())
+		return "?";
+	return _(Families[family].name);
+}
+
+std::vector<std::string> ScoreHelpLines()
+{
+	std::vector<std::string> lines;
+	if (!ScoringActive())
+		return lines;
+	// The game's values: the host's (from the table), never this client's own ini.
+	const ScoreValues values = State.haveTable ? State.table.values : ValuesFromOptions();
+	lines.emplace_back(_("$Scoring (this game):"));
+	lines.emplace_back(_("The host keeps a score. The score board (K) shows the places during play; the counts behind them are shown only when the game ends."));
+	if (values.uniqueKill != 0)
+		lines.emplace_back(FormatRuntime(ngettext("Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} point.", "Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} points.", values.uniqueKill), values.uniqueKill));
+	if (values.diabloKill != 0)
+		lines.emplace_back(FormatRuntime(ngettext("Killing blow on Diablo: +{:d} point.", "Killing blow on Diablo: +{:d} points.", values.diabloKill), values.diabloKill));
+	lines.emplace_back(_("Diablo's death makes the scores final and opens the results for everyone; nobody has to leave the game. The host can also end the scoring from the game menu (End Game and Announce Scores)."));
+	if (values.playerKillTransfer != 0)
+		lines.emplace_back(FormatRuntime(ngettext("Killing another player takes {:d} banked point from them, if they have one (points for uniques, Diablo and player kills are banked).", "Killing another player takes up to {:d} banked points from them (points for uniques, Diablo and player kills are banked).", values.playerKillTransfer), values.playerKillTransfer));
+	if (values.familyLead != 0)
+		lines.emplace_back(FormatRuntime(ngettext("Most kills in a monster family (Zombies, Fallen, Skeletons, ...): +{:d} point per family.", "Most kills in a monster family (Zombies, Fallen, Skeletons, ...): +{:d} points per family.", values.familyLead), values.familyLead));
+	constexpr std::pair<Award, const char *> AwardLines[] = {
+		{ Award::Gold, N_("Most / second / third gold found: {:d} / {:d} / {:d} points.") },
+		{ Award::PvpKills, N_("Most / second / third player kills: {:d} / {:d} / {:d} points.") },
+		{ Award::Kills, N_("Most / second / third monster kills: {:d} / {:d} / {:d} points.") },
+		{ Award::Potions, N_("Most / second / third potions drunk: {:d} / {:d} / {:d} points.") },
+		{ Award::Identified, N_("Most / second / third items identified: {:d} / {:d} / {:d} points.") },
+	};
+	for (const auto &[award, text] : AwardLines) {
+		const auto &points = values.ranked[static_cast<size_t>(award)];
+		if (points[0] == 0 && points[1] == 0 && points[2] == 0)
+			continue;
+		lines.emplace_back(FormatRuntime(_(text), points[0], points[1], points[2]));
+	}
+	lines.emplace_back(_("Players tied for a place get nothing for it, and the places they share are used up. A count of zero never places."));
+	lines.emplace_back(FormatRuntime(_("What counts: only the killing blow (your golem's kills are yours); gold no player has held before; healing, mana and rejuvenation potions drunk in the dungeon while life or mana is not full; magic and unique items you found yourself in this game, each identified once; the same player killed again within {:d} seconds is not another player kill; monsters summoned during play (such as raised skeletons) do not count."), values.pvpRepeatSeconds));
+	lines.emplace_back("");
+	return lines;
 }
 
 std::string ScoreDescribeForHarness()

@@ -14,6 +14,7 @@
 #include "minitext.h"
 #include "panels/info_box.hpp"
 #include "qol/chatlog.h"
+#include "score/score.h"
 #include "stores.h"
 #include "utils/language.h"
 
@@ -98,6 +99,8 @@ const char *const HelpText[] = {
 };
 
 std::vector<std::string> HelpTextLines;
+/** The fixed help text; HelpTextLines is this plus the rules of the game's scoring when it is on. */
+std::vector<std::string> BaseHelpTextLines;
 
 constexpr int PaddingTop = 32;
 constexpr int PaddingLeft = 32;
@@ -164,6 +167,24 @@ void DrawHelpSlider(const Surface &out)
 
 } // namespace
 
+namespace {
+
+void AppendWrapped(std::vector<std::string> &lines, std::string_view text)
+{
+	const std::string paragraph = WordWrapString(text, ContentTextWidth);
+
+	size_t previous = 0;
+	while (true) {
+		const size_t next = paragraph.find('\n', previous);
+		lines.emplace_back(paragraph.substr(previous, next - previous));
+		if (next == std::string::npos)
+			break;
+		previous = next + 1;
+	}
+}
+
+} // namespace
+
 void InitHelp()
 {
 	static bool Initialized = false;
@@ -172,18 +193,9 @@ void InitHelp()
 
 	HelpFlag = false;
 
-	for (const auto *text : HelpText) {
-		const std::string paragraph = WordWrapString(_(text), ContentTextWidth);
-
-		size_t previous = 0;
-		while (true) {
-			const size_t next = paragraph.find('\n', previous);
-			HelpTextLines.emplace_back(paragraph.substr(previous, next - previous));
-			if (next == std::string::npos)
-				break;
-			previous = next + 1;
-		}
-	}
+	for (const auto *text : HelpText)
+		AppendWrapped(BaseHelpTextLines, _(text));
+	HelpTextLines = BaseHelpTextLines;
 
 	Initialized = true;
 }
@@ -244,6 +256,14 @@ void DisplayHelp()
 	SkipLines = 0;
 	HelpFlag = true;
 	ChatLogFlag = false;
+	// The rules of this game's scoring (with the host's point values) go first when scoring is on.
+	HelpTextLines.clear();
+	for (const std::string &line : ScoreHelpLines())
+		AppendWrapped(HelpTextLines, line);
+	HelpTextLines.insert(HelpTextLines.end(), BaseHelpTextLines.begin(), BaseHelpTextLines.end());
+#ifdef DEVILUTIONX_SCORING
+	ScoreBoardFlag = false;
+#endif
 }
 
 void HelpScrollUp()

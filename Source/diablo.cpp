@@ -627,6 +627,10 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 			HelpScrollUp();
 		} else if (ChatLogFlag) {
 			ChatLogScrollUp();
+#ifdef DEVILUTIONX_SCORING
+		} else if (ScoreBoardFlag) {
+			ScoreBoardKey(0);
+#endif
 		} else if (AutomapActive) {
 			AutomapUp();
 		} else if (IsStashOpen) {
@@ -642,6 +646,10 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 			HelpScrollDown();
 		} else if (ChatLogFlag) {
 			ChatLogScrollDown();
+#ifdef DEVILUTIONX_SCORING
+		} else if (ScoreBoardFlag) {
+			ScoreBoardKey(1);
+#endif
 		} else if (AutomapActive) {
 			AutomapDown();
 		} else if (IsStashOpen) {
@@ -663,10 +671,22 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 		}
 		return;
 	case SDLK_LEFT:
+#ifdef DEVILUTIONX_SCORING
+		if (ScoreBoardFlag && !ChatFlag) {
+			ScoreBoardKey(2);
+			return;
+		}
+#endif
 		if (AutomapActive && !ChatFlag)
 			AutomapLeft();
 		return;
 	case SDLK_RIGHT:
+#ifdef DEVILUTIONX_SCORING
+		if (ScoreBoardFlag && !ChatFlag) {
+			ScoreBoardKey(3);
+			return;
+		}
+#endif
 		if (AutomapActive && !ChatFlag)
 			AutomapRight();
 		return;
@@ -810,6 +830,10 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 				HelpScrollUp();
 			} else if (ChatLogFlag) {
 				ChatLogScrollUp();
+#ifdef DEVILUTIONX_SCORING
+			} else if (ScoreBoardFlag) {
+				ScoreBoardKey(0);
+#endif
 			} else if (IsStashOpen) {
 				Stash.PreviousPage();
 			} else if (SDL_GetModState() & SDL_KMOD_CTRL) {
@@ -828,6 +852,10 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 				HelpScrollDown();
 			} else if (ChatLogFlag) {
 				ChatLogScrollDown();
+#ifdef DEVILUTIONX_SCORING
+			} else if (ScoreBoardFlag) {
+				ScoreBoardKey(1);
+#endif
 			} else if (IsStashOpen) {
 				Stash.NextPage();
 			} else if (SDL_GetModState() & SDL_KMOD_CTRL) {
@@ -1800,7 +1828,7 @@ bool CanAutomapBeToggledOff()
 	// check if every window is closed - if yes, automap can be toggled off
 	return !QuestLogIsOpen && !IsWithdrawGoldOpen && !IsStashOpen && !IsVisualStoreOpen && !CharFlag
 	    && !SpellbookFlag && !invflag && !isGameMenuOpen && !qtextflag && !SpellSelectFlag
-	    && !ChatLogFlag && !HelpFlag;
+	    && !ChatLogFlag && !HelpFlag && !ScoreBoardFlag;
 }
 
 void OptionLanguageCodeChanged()
@@ -2047,6 +2075,9 @@ void InitKeymapActions()
 		    ClosePanels();
 		    HelpFlag = false;
 		    ChatLogFlag = false;
+#ifdef DEVILUTIONX_SCORING
+		    ScoreBoardFlag = false;
+#endif
 		    SpellSelectFlag = false;
 		    if (qtextflag && leveltype == DTYPE_TOWN) {
 			    qtextflag = false;
@@ -2143,6 +2174,18 @@ void InitKeymapActions()
 	    [] {
 		    ReorganizeInventory(*MyPlayer);
 	    });
+#ifdef DEVILUTIONX_SCORING
+	options.Keymapper.AddAction(
+	    "ScoreBoard",
+	    N_("Score Board"),
+	    N_("Shows the places of a game with scoring on (and the final scores after the end)."),
+	    'K',
+	    [] {
+		    ToggleScoreBoard();
+	    },
+	    nullptr,
+	    ScoringActive);
+#endif
 #ifdef _DEBUG
 	options.Keymapper.AddAction(
 	    "OpenConsole",
@@ -2565,6 +2608,9 @@ void InitPadmapActions()
 		    ClosePanels();
 		    HelpFlag = false;
 		    ChatLogFlag = false;
+#ifdef DEVILUTIONX_SCORING
+		    ScoreBoardFlag = false;
+#endif
 		    SpellSelectFlag = false;
 		    if (qtextflag && leveltype == DTYPE_TOWN) {
 			    qtextflag = false;
@@ -3004,6 +3050,13 @@ bool PressEscKey()
 		ChatLogFlag = false;
 		rv = true;
 	}
+
+#ifdef DEVILUTIONX_SCORING
+	if (ScoreBoardFlag) {
+		ScoreBoardFlag = false;
+		rv = true;
+	}
+#endif
 
 	if (qtextflag) {
 		qtextflag = false;

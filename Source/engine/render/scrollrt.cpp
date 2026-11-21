@@ -58,6 +58,7 @@
 #include "panels/charpanel.hpp"
 #include "panels/console.hpp"
 #include "panels/partypanel.hpp"
+#include "score/score.h"
 #include "panels/quest_log.hpp"
 #include "panels/spell_list.hpp"
 #include "plrmsg.h"
@@ -1441,6 +1442,11 @@ void DrawView(const Surface &out, Point startPosition)
 	if (ChatLogFlag) {
 		DrawChatLog(out);
 	}
+#ifdef DEVILUTIONX_SCORING
+	if (ScoreBoardFlag) {
+		DrawScoreBoard(out);
+	}
+#endif
 	if (MyPlayerIsDead) {
 		RedBack(out);
 		DrawDeathText(out);
