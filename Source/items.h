@@ -24,7 +24,8 @@ namespace devilution {
 
 namespace hd {
 class ItemGraphic;
-}
+class HeldItem;
+} // namespace hd
 
 #define MAXITEMS 127
 #define ITEMTYPES 43
@@ -503,6 +504,11 @@ uint8_t GetOutlineColor(const Item &item, bool checkReq);
  * @param dropped true when the item lies in the world, false for an inventory picture
  */
 hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped);
+/**
+ * @brief The HD layer's scope for drawing a hero: the art of the weapon it holds (see hd.hpp). Made from the hero's gear alone, which every
+ * client in a game knows alike, so all of them draw a hero with the same art. Also notes what the hero holds (CalcPlrInv).
+ */
+hd::HeldItem HdHeldItem(const Player &player);
 bool IsItemAvailable(int i);
 void ClearUniqueItemFlags();
 void InitItemGFX();

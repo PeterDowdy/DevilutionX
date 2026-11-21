@@ -1824,6 +1824,11 @@ void StorytellerIdentifyItem(Item &item)
 	item._iIdentified = true;
 	TakePlrsMoney(item._iIvalue);
 	CalcPlrInv(myPlayer, true);
+	if (idx < 0 && idx >= -7) {
+		// a worn item: the others' copy of it is identified too (a unique's own held art, HdHeldItem)
+		static constexpr inv_body_loc Worn[] = { INVLOC_HEAD, INVLOC_CHEST, INVLOC_HAND_LEFT, INVLOC_HAND_RIGHT, INVLOC_RING_LEFT, INVLOC_RING_RIGHT, INVLOC_AMULET };
+		NetSendCmdChItem(false, static_cast<uint8_t>(Worn[-idx - 1]));
+	}
 }
 
 void ConfirmEnter(Item &item)
