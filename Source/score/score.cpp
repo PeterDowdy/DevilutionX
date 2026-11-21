@@ -914,12 +914,13 @@ std::vector<std::string> ScoreHelpLines()
 	// The game's values: the host's (from the table), never this client's own ini.
 	const ScoreValues values = State.haveTable ? State.table.values : ValuesFromOptions();
 	lines.emplace_back(_("$Scoring (this game):"));
-	lines.emplace_back(_("The host keeps a score. The score board (K) shows the places during play; the counts behind them are shown only when the game ends."));
+	const std::string_view boardKey = GetOptions().Keymapper.KeyNameForAction("ScoreBoard");
+	lines.emplace_back(FormatRuntime(_("The host keeps a score. The score board ({:s}) shows the places during play; the counts behind them are shown only when the game ends."), boardKey.empty() ? std::string_view("-") : boardKey));
 	if (values.uniqueKill != 0)
 		lines.emplace_back(FormatRuntime(ngettext("Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} point.", "Killing blow on a unique monster (the Skeleton King and the Butcher included): +{:d} points.", values.uniqueKill), values.uniqueKill));
 	if (values.diabloKill != 0)
 		lines.emplace_back(FormatRuntime(ngettext("Killing blow on Diablo: +{:d} point.", "Killing blow on Diablo: +{:d} points.", values.diabloKill), values.diabloKill));
-	lines.emplace_back(_("Diablo's death makes the scores final and opens the results for everyone; nobody has to leave the game. The host can also end the scoring from the game menu (End Game and Announce Scores)."));
+	lines.emplace_back(_("Diablo's death makes the scores final and opens the results for everyone; nobody has to leave the game. The host can also end the scoring from the game menu (Announce Scores: the scores become final, the game stays open)."));
 	if (values.playerKillTransfer != 0)
 		lines.emplace_back(FormatRuntime(ngettext("Killing another player takes {:d} banked point from them, if they have one (points for uniques, Diablo and player kills are banked).", "Killing another player takes up to {:d} banked points from them (points for uniques, Diablo and player kills are banked).", values.playerKillTransfer), values.playerKillTransfer));
 	if (values.familyLead != 0)

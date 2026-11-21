@@ -74,7 +74,7 @@ TMenuItem sgMultiMenuScoring[] = {
 	// clang-format off
 	// dwFlags,      pszStr,                                fnMenu
 	{ GMENU_ENABLED, N_("Options"),                         &GamemenuOptions        },
-	{ GMENU_ENABLED, N_("End Game and Announce Scores"),    &GamemenuEndAndAnnounce },
+	{ GMENU_ENABLED, N_("Announce Scores"),                 &GamemenuEndAndAnnounce },
 	{ GMENU_ENABLED, N_("Exit to Main Menu"),               &GamemenuNewGame        },
 	{ GMENU_ENABLED, N_("Quit Game"),                       &gamemenu_quit_game     },
 	{ GMENU_ENABLED, nullptr,                               nullptr                 },
