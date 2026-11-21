@@ -5,6 +5,7 @@
 #include <atomic>
 #include <barrier>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -69,12 +70,19 @@ struct HdImage {
 	int boxDx = 0;      ///< where that rectangle starts, relative to the sprite's top-left
 	int boxDy = 0;
 	std::string file;   ///< the pack file the picture was loaded from: a palette swap's art finds its own effect layer by it (FxOf)
+	bool resident = false; ///< its pixels are loaded: ImageId loads them, Collect lets go of them (the rest stays, so the id stays the file's)
+	bool pending = false;  ///< in PendingRelease
+	uint32_t refs = 0;     ///< what holds it: registered sprite frames that drew it (SpriteEntry::images), the tileset (TileHeld), the art whose effect layer it is
+	uint32_t lastUse = 0;  ///< UseClock when it was last drawn
+	uint32_t letGoView = 0;    ///< ViewClock and UseClock when the last holder let go of it (Collect waits a little: GraceViews)
+	uint32_t letGoPresent = 0;
+	size_t bytes = 0;      ///< what its pixels and reach take (ResidentBytes)
 };
 
 struct SpriteEntry {
 	std::string stem;  ///< "sprite/<path>"
 	std::string frame; ///< "/<group>.<frame>.png"
-	uint32_t check;
+	uint32_t check = 0;
 	std::string recolour;          ///< the named TRN ClxApplyTrans applied ("bluered"), if any
 	bool swapArt = false;          ///< the pack has this frame's "@<recolour>" art, which already shows it
 	bool pending = false;          ///< between BeforeRecolour and AfterRecolour
@@ -83,6 +91,8 @@ struct SpriteEntry {
 	mutable const void *uniqueFor = nullptr; ///< the last unique item's art (UniqueItemArt) looked for, and what it found (ItemGraphic scopes)
 	mutable uint32_t uniqueGeneration = 0;
 	mutable uint32_t uniqueImage = 0;
+	const void *owner = nullptr;  ///< the data the game frees the sprite with (RegisterSpriteList, ForgetSprites)
+	std::vector<uint32_t> images; ///< the images its draws used, which it holds (HdImage::refs)
 
 	/** The pack file of this frame in a swap ("bluered", "bluered+rcrn", "+eth", "+general~moonbender"), or itself for none. */
 	[[nodiscard]] std::string Key(std::string_view swap) const
@@ -104,9 +114,38 @@ std::unordered_map<std::string, std::string> Manifest; ///< image file -> palett
 std::unordered_map<std::string, int> MonsterLights;   ///< "monsters/<path>[@<trn>]" -> light radius ("light" lines of hd.txt)
 std::vector<HdImage> Images(1);                         ///< id 0: none; reserved for the whole manifest when the pack loads, so it never
                                                         ///< reallocates while Compose reads it (the level loader thread adds images)
-std::mutex ImagesMutex;                                 ///< ImageId: the main and the loader thread look up / add images
+/**
+ * The main and the level loader thread look up, add and load images, register, recolour and forget sprites: Images (but the pixels of the
+ * images the PalSurface shows, which only the main thread composes, draws into and lets go of: Collect), ImageIds, Sprites, Owners, TrnNames,
+ * TileHeld and PendingRelease are used under it.
+ */
+std::mutex ImagesMutex;
 std::unordered_map<std::string, uint32_t> ImageIds;     ///< image file -> id (0: no image)
 std::unordered_map<const uint8_t *, SpriteEntry> Sprites;
+std::unordered_map<const void *, std::vector<const uint8_t *>> Owners; ///< RegisterSpriteList's owner -> its sprites with art (ForgetSprites)
+std::unordered_set<uint32_t> TileHeld;     ///< the pillars' images of the tileset in use, which it holds (SetTileset lets go of them)
+std::vector<uint32_t> PendingRelease;      ///< images nothing holds any more: Collect lets go of their pixels once nothing on screen shows them
+bool UnloadArt = true;                     ///< DEVILUTIONX_HD_UNLOAD=0: images are kept once loaded, as before
+size_t BudgetBytes = 0;                    ///< DEVILUTIONX_HD_MEMORY_MB / "memory <MB>": what held but idle images may take (0: no bound)
+constexpr size_t DefaultBudgetMb = 4096;
+constexpr uint32_t IdlePresents = 600;     ///< how long an image must go undrawn before the budget lets go of it
+std::atomic<uint32_t> UseClock { 0 };      ///< counts presents: HdImage::lastUse
+/**
+ * Counts the game view's draws (ForgetView). An image nothing holds is let go of only once the view has been drawn GraceViews times since (or,
+ * without a game view, after GracePresents presents): the game frees sprites and loads the same ones again (a hero's graphics on every level
+ * change, a monster type that is on the next level too), and the new sprites hold the image again when they first draw. The loading screen
+ * draws no view, so what was on the last level waits for the next one's first frames.
+ */
+std::atomic<uint32_t> ViewClock { 0 };
+constexpr uint32_t GraceViews = 8;
+constexpr uint32_t GracePresents = 600;
+uint32_t LastBudgetScan = 0;
+std::atomic<size_t> ResidentBytes { 0 };
+std::atomic<size_t> PeakBytes { 0 };
+std::atomic<uint32_t> LoadCount { 0 };
+std::atomic<uint32_t> UnloadCount { 0 };
+std::string MemLog;                        ///< DEVILUTIONX_HD_MEMLOG
+double ComposeMs = 0;                      ///< time spent composing, for MemLog
 std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any frame, its own or a swap's
 std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying, while a NamedRecolour lives
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
@@ -275,6 +314,14 @@ std::string NormalizePath(std::string_view path)
 	return out;
 }
 
+/** ``n`` more bytes of ``img`` loaded. */
+void AddBytes(HdImage &img, size_t n)
+{
+	img.bytes += n;
+	const size_t now = ResidentBytes += n;
+	for (size_t peak = PeakBytes; now > peak && !PeakBytes.compare_exchange_weak(peak, now);) { }
+}
+
 bool LoadImage(const std::string &file, const std::string &palette, HdImage &img)
 {
 	const std::string path = PackDir + "/" + file;
@@ -306,8 +353,46 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 		std::ifstream pal(PackDir + "/" + palette, std::ios::binary);
 		img.hasRef = static_cast<bool>(pal.read(reinterpret_cast<char *>(img.ref.data()), img.ref.size()));
 	}
+	img.reach.clear();
+	img.bytes = 0;
+	AddBytes(img, img.px.size() * sizeof(uint32_t));
+	img.resident = true;
+	++LoadCount;
 	return true;
 }
+
+/** Lets go of an image's pixels (and reach): only on the main thread, while nothing on screen shows it (Collect). */
+void Unload(HdImage &img)
+{
+	if (!img.resident) return;
+	ResidentBytes -= img.bytes;
+	img.bytes = 0;
+	std::vector<uint32_t>().swap(img.px);
+	std::vector<uint8_t>().swap(img.reach);
+	img.resident = false;
+	++UnloadCount;
+}
+
+/** One more holder of the image ``id``. */
+void Hold(uint32_t id)
+{
+	if (id != 0) ++Images[id].refs;
+}
+
+/** One holder fewer: an image nothing holds goes to PendingRelease. */
+void LetGo(uint32_t id)
+{
+	if (id == 0 || Images[id].refs == 0) return;
+	HdImage &img = Images[id];
+	if (--img.refs != 0) return;
+	img.letGoView = ViewClock.load(std::memory_order_relaxed);
+	img.letGoPresent = UseClock.load(std::memory_order_relaxed);
+	if (!img.pending) {
+		img.pending = true;
+		PendingRelease.push_back(id);
+	}
+}
+
 
 std::string ReadPngText(const std::string &path, std::string_view keyword);
 
@@ -333,11 +418,26 @@ void ReadBox(const std::string &file, HdImage &img)
 	img.loH = h;
 }
 
+/** The pixels of an image that were let go, loaded again (the file may have changed since; what it covers stays as first read). */
+bool Reload(uint32_t id)
+{
+	HdImage &img = Images[id];
+	const auto entry = Manifest.find(img.file);
+	if (entry != Manifest.end() && LoadImage(img.file, entry->second, img)) return true;
+	img.w = img.h = 0; // drawn as art without HD
+	return false;
+}
+
+/** The image of the pack file ``file``, its pixels loaded; 0 when the pack has none. Under ImagesMutex. */
 uint32_t ImageId(const std::string &file, int loW, int loH)
 {
-	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const auto found = ImageIds.find(file);
-	if (found != ImageIds.end()) return found->second;
+	if (found != ImageIds.end()) {
+		const uint32_t known = found->second;
+		if (known != 0 && !Images[known].resident && !Reload(known)) return 0;
+		if (known != 0) Images[known].lastUse = UseClock.load(std::memory_order_relaxed);
+		return known;
+	}
 	uint32_t id = 0;
 	const auto entry = Manifest.find(file);
 	if (entry != Manifest.end()) {
@@ -355,6 +455,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 				img.figure = img.figure || file.rfind(figure, 0) == 0;
 			img.monster = file.rfind("sprite/monsters/", 0) == 0;
 			if (file.compare(0, 7, "sprite/") == 0) ReadBox(file, img);
+			img.lastUse = UseClock.load(std::memory_order_relaxed);
 			Images.push_back(std::move(img));
 			id = static_cast<uint32_t>(Images.size() - 1);
 			if (DumpIds) std::ofstream(DumpDir + "/ids.txt", std::ios::app) << id << ' ' << file << '\n';
@@ -395,7 +496,13 @@ std::string ReadPngText(const std::string &path, std::string_view keyword)
  */
 uint32_t FxOf(uint32_t image, const SpriteEntry &entry)
 {
-	if (Images[image].fxLooked) return Images[image].fx;
+	if (Images[image].fxLooked) {
+		const uint32_t fx = Images[image].fx;
+		if (fx == 0) return 0;
+		if (!Images[fx].resident && !Reload(fx)) return 0; // let go of by the budget while its art was held
+		Images[fx].lastUse = UseClock.load(std::memory_order_relaxed);
+		return fx;
+	}
 	Images[image].fxLooked = true;
 	std::string file = "fx" + entry.Key({}).substr(std::strlen("sprite"));
 	const std::string artFile = Images[image].file; // (a copy: ImageId below may grow Images)
@@ -415,7 +522,24 @@ uint32_t FxOf(uint32_t image, const SpriteEntry &entry)
 	Images[fx].fxDx = dx;
 	Images[fx].fxDy = dy;
 	Images[image].fx = fx;
+	Hold(fx); // until the art it lights is let go of
 	return fx;
+}
+
+/** The sprite frame ``entry`` drew with the image ``id``: it holds it until the game frees the sprite. */
+void HoldFor(SpriteEntry &entry, uint32_t id)
+{
+	if (id == 0 || std::find(entry.images.begin(), entry.images.end(), id) != entry.images.end()) return;
+	entry.images.push_back(id);
+	Hold(id);
+}
+
+/** The sprite frame ``entry`` is forgotten: lets go of the images it held. */
+void LetGoOf(SpriteEntry &entry)
+{
+	for (const uint32_t id : entry.images)
+		LetGo(id);
+	entry.images.clear();
 }
 
 bool EnsurePlane()
@@ -584,6 +708,7 @@ void ComputeReach(HdImage &img)
 			img.reach[static_cast<size_t>(ly) * img.loW + lx] = best >= 32 ? 1 : 0;
 		}
 	}
+	AddBytes(img, img.reach.size());
 }
 
 /**
@@ -1344,6 +1469,64 @@ void ComposeOverlays(SDL_Surface *pal)
 	}
 }
 
+/**
+ * Before a frame is composed (main thread): lets go of the pixels of the images nothing holds any more (PendingRelease), and, above the
+ * budget, of the images held but not drawn for longest. Neither while a pixel of the PalSurface, of what free silhouettes keep behind, of a
+ * tracked off-screen buffer or an effect layer still shows it: those are kept for a later frame.
+ */
+void Collect()
+{
+	if (!UnloadArt) return;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	const uint32_t now = UseClock.load(std::memory_order_relaxed);
+	const uint32_t view = ViewClock.load(std::memory_order_relaxed);
+	const auto due = [now, view](const HdImage &img) { return view - img.letGoView >= GraceViews || now - img.letGoPresent >= GracePresents; };
+	const bool over = BudgetBytes != 0 && ResidentBytes > BudgetBytes && now - LastBudgetScan >= 30;
+	if (!over && std::none_of(PendingRelease.begin(), PendingRelease.end(), [&due](uint32_t id) { return Images[id].refs == 0 && due(Images[id]); })) return;
+	std::vector<uint8_t> shown(Images.size(), 0);
+	const auto mark = [&shown](const std::vector<PixelProvenance> &plane) {
+		for (const PixelProvenance &p : plane)
+			if (p.image != 0 && p.image < shown.size()) shown[p.image] = 1;
+	};
+	mark(Plane);
+	mark(BehindProv);
+	for (const Offscreen &o : Offscreens)
+		mark(o.plane);
+	for (const Overlay &o : Overlays)
+		shown[o.fx] = 1;
+	std::vector<uint32_t> keep;
+	for (size_t i = 0; i < PendingRelease.size(); ++i) { // (letting go of an image lets go of its effect layer: added at the end)
+		const uint32_t id = PendingRelease[i];
+		HdImage &img = Images[id];
+		if (img.refs != 0) { // held again
+			img.pending = false;
+			continue;
+		}
+		if (shown[id] != 0 || !due(img)) {
+			keep.push_back(id);
+			continue;
+		}
+		img.pending = false;
+		Unload(img);
+		if (img.fx != 0) LetGo(img.fx);
+		img.fx = 0;
+		img.fxLooked = false;
+	}
+	PendingRelease = std::move(keep);
+	if (!over) return;
+	LastBudgetScan = now;
+	std::vector<uint32_t> idle;
+	for (uint32_t id = 1; id < Images.size(); ++id) {
+		const HdImage &img = Images[id];
+		if (img.resident && shown[id] == 0 && now - img.lastUse >= IdlePresents) idle.push_back(id);
+	}
+	std::sort(idle.begin(), idle.end(), [](uint32_t a, uint32_t b) { return Images[a].lastUse < Images[b].lastUse; });
+	for (const uint32_t id : idle) {
+		if (ResidentBytes <= BudgetBytes) break;
+		Unload(Images[id]); // still held: drawn again, it is loaded again
+	}
+}
+
 void Compose(SDL_Surface *pal)
 {
 	Frame.resize(static_cast<size_t>(pal->w) * Scale * pal->h * Scale);
@@ -1478,6 +1661,7 @@ void Init()
 	PixelShading = false;
 	MonsterLights.clear();
 	MinBright = 0;
+	BudgetBytes = DefaultBudgetMb << 20;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
 		std::string kind;
@@ -1505,6 +1689,9 @@ void Init()
 			std::string who;
 			int radius = 0;
 			if (words >> who >> radius && radius > 0) MonsterLights[who] = std::min(radius, 15);
+		} else if (kind == "memory") {
+			double mb = 0;
+			if (words >> mb) BudgetBytes = static_cast<size_t>(std::max(0.0, mb) * (1 << 20));
 		}
 	}
 	Scale = std::clamp(Scale, 1, 8);
@@ -1536,40 +1723,95 @@ void Init()
 	}
 	if (MinBright > 0)
 		LogInfo("HD: minimum brightness for monsters, {}", MinBright);
+	if (const char *unload = std::getenv("DEVILUTIONX_HD_UNLOAD"); unload != nullptr && *unload != '\0') UnloadArt = std::atoi(unload) != 0;
+	if (const char *budget = std::getenv("DEVILUTIONX_HD_MEMORY_MB"); budget != nullptr && *budget != '\0') BudgetBytes = static_cast<size_t>(std::max(0.0, std::atof(budget)) * (1 << 20));
+	if (const char *log = std::getenv("DEVILUTIONX_HD_MEMLOG"); log != nullptr) MemLog = log;
 	Active = true;
 	SurfaceBlitHook = &CopyProvenance;
+	if (ClxFreeHook == nullptr) {
+		ClxFreeHook = [](const uint8_t *data) { ForgetSprites(data); };
+		std::atexit([]() { ClxFreeHook = nullptr; }); // sprite data freed at exit may outlive the maps here
+	}
 	LogInfo("HD: pack {} ({} images, {}x{}{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
+	LogInfo("HD: images {}, idle art bounded at {} MB", UnloadArt ? "let go of when unused" : "kept once loaded", BudgetBytes >> 20);
 }
 
-void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites)
+void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites, const void *owner)
 {
 	if (!Active) return;
 	if (sprites.isSheet()) {
 		const ClxSpriteSheet sheet = sprites.sheet();
 		for (uint16_t g = 0; g < sheet.numLists(); ++g)
-			RegisterSpriteList(path, g, sheet[g]);
+			RegisterSpriteList(path, g, sheet[g], owner != nullptr ? owner : sheet.data());
 	} else {
-		RegisterSpriteList(path, 0, sprites.list());
+		RegisterSpriteList(path, 0, sprites.list(), owner);
 	}
 }
 
-void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list)
+void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list, const void *owner)
 {
 	if (!Active) return;
+	if (owner == nullptr) owner = list.data();
 	const std::string stem = "sprite/" + NormalizePath(path);
 	const bool art = ArtStems.count(stem) != 0;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	for (uint32_t f = 0; f < list.numSprites(); ++f) {
 		const ClxSprite sprite = list[f];
-		if (art)
-			Sprites[sprite.pixelData()] = { stem, "/" + std::to_string(group) + "." + std::to_string(f) + ".png", Checksum(sprite) };
-		else
-			Sprites.erase(sprite.pixelData()); // a buffer reused at the same address
+		const auto found = Sprites.find(sprite.pixelData());
+		if (found != Sprites.end()) { // a buffer reused at the same address (one freed without telling, as before ClxFreeHook)
+			LetGoOf(found->second);
+			if (!art) Sprites.erase(found);
+		}
+		if (!art) continue;
+		SpriteEntry &entry = Sprites[sprite.pixelData()];
+		entry = SpriteEntry {};
+		entry.stem = stem;
+		entry.frame = "/" + std::to_string(group) + "." + std::to_string(f) + ".png";
+		entry.check = Checksum(sprite);
+		entry.owner = owner;
+		Owners[owner].push_back(sprite.pixelData());
 	}
+}
+
+void ForgetSprites(const void *owner)
+{
+	if (!Active || owner == nullptr) return;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	const auto found = Owners.find(owner);
+	if (found == Owners.end()) return;
+	for (const uint8_t *key : found->second) {
+		const auto entry = Sprites.find(key);
+		if (entry == Sprites.end() || entry->second.owner != owner) continue; // registered again since, for data of its own
+		LetGoOf(entry->second);
+		Sprites.erase(entry);
+	}
+	Owners.erase(found);
+}
+
+MemoryUse Memory()
+{
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	MemoryUse use;
+	use.bytes = ResidentBytes;
+	use.peak = PeakBytes;
+	use.loads = LoadCount;
+	use.unloads = UnloadCount;
+	for (const HdImage &img : Images)
+		use.images += img.resident ? 1 : 0;
+	return use;
+}
+
+bool Loaded(std::string_view file)
+{
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	const auto found = ImageIds.find(std::string(file));
+	return found != ImageIds.end() && found->second != 0 && Images[found->second].resident;
 }
 
 void BeforeRecolour(ClxSprite sprite, const uint8_t *trn)
 {
 	if (!Active) return;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const auto found = Sprites.find(sprite.pixelData());
 	if (found == Sprites.end() || found->second.check != Checksum(sprite)) return;
 	SpriteEntry &entry = found->second;
@@ -1595,6 +1837,7 @@ void BeforeRecolour(ClxSprite sprite, const uint8_t *trn)
 void AfterRecolour(ClxSprite sprite)
 {
 	if (!Active) return;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const auto found = Sprites.find(sprite.pixelData());
 	if (found != Sprites.end() && found->second.pending) {
 		found->second.check = Checksum(sprite);
@@ -1618,6 +1861,7 @@ void NameTrn(const uint8_t *trn, std::string_view name, std::string_view owner)
 	std::string stem = TrnStem(name);
 	const std::string slug = NameSlug(owner);
 	std::string own = slug.empty() ? std::string() : stem + "~" + slug;
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	TrnNames[trn] = { std::move(stem), std::move(own), TrnChecksum(trn) };
 }
 
@@ -1671,6 +1915,12 @@ void ForgetOffscreen(SDL_Surface *buffer)
 
 void SetTileset(std::string_view name)
 {
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	if (name != Tileset) { // the pillars of the last tileset are no longer drawn
+		for (const uint32_t id : TileHeld)
+			LetGo(id);
+		TileHeld.clear();
+	}
 	Tileset = name;
 }
 
@@ -1702,6 +1952,7 @@ void ForgetView(const Surface &out)
 	ViewY1 = std::min(out.region.y + out.region.h, Target->h);
 	SceneSerial = NextSerial;
 	DrawLights.clear();
+	++ViewClock;
 }
 
 SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, const uint8_t *drawTrn, bool local)
@@ -1709,9 +1960,10 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 	uint32_t image = 0;
 	const SpriteEntry *drawn = nullptr;
 	if (Active) {
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
 		const auto found = Sprites.find(clx.pixelData());
 		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
-			const SpriteEntry &entry = found->second;
+			SpriteEntry &entry = found->second;
 			drawn = &entry;
 			// The most specific art the pack has: a unique item's own, a dropped item graphic's own, the one monster's the draw's TRN belongs
 			// to, the draw's own swap on top of the sprite's (art that every monster with that TRN shares), the sprite's swap, itself
@@ -1741,6 +1993,9 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 					trn = entry.trn.data();
 				}
 			}
+			if (image != 0 && !Images[image].resident && !Reload(image)) image = 0; // (a unique item's art is kept by the entry, not looked up)
+			if (image != 0) Images[image].lastUse = UseClock.load(std::memory_order_relaxed);
+			HoldFor(entry, image);
 		}
 	}
 	const int left = out.region.x + position.x;
@@ -1766,7 +2021,12 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 		DrawLights[TrackSerial] = drawTrn == nullptr ? 255 : lit ? FloorWeightOfLevel(LightLevelOf(drawTrn)) : 0;
 	}
 	if (boxed) Free.whole = Free.on;
-	if (const uint32_t fx = FxOf(image, *drawn); fx != 0) {
+	uint32_t fx = 0;
+	{
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
+		fx = FxOf(image, *drawn);
+	}
+	if (fx != 0) {
 		Fx = { fx, left, top, std::max(out.region.x, 0), std::max(out.region.y, 0), std::min(out.region.x + out.region.w, Target->w), std::min(out.region.y + out.region.h, Target->h) };
 		Free.whole = Free.on;
 	}
@@ -1780,8 +2040,11 @@ SpriteScope::~SpriteScope()
 PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows)
 {
 	uint32_t image = 0;
-	if (Active && !Tileset.empty())
+	if (Active && !Tileset.empty()) {
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
 		image = ImageId("tile/" + Tileset + "/" + std::to_string(pillar) + ".png", 64, rows * 32);
+		if (image != 0 && TileHeld.insert(image).second) Hold(image);
+	}
 	Begin(out, image, out.region.x + bottomLeft.x, out.region.y + bottomLeft.y - rows * 32 + 1);
 	if (!PixelShading) TrackShade = ShadeLevel; // lit per piece or per pixel: dun_render marks each pixel's light level
 }
@@ -1800,9 +2063,18 @@ bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)
 {
 	if (!Active || palSurface == nullptr || palSurface->format->palette == nullptr) return false;
 	Target = palSurface;
+	Collect();
+	const auto composeStart = std::chrono::steady_clock::now();
 	Compose(palSurface);
+	ComposeMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - composeStart).count();
 	Dump(palSurface, dumpStep);
 	++PresentCount;
+	++UseClock;
+	if (!MemLog.empty() && PresentCount % 300 == 0) {
+		const MemoryUse use = Memory();
+		std::ofstream(MemLog, std::ios::app) << "present " << PresentCount << " bytes " << use.bytes << " peak " << use.peak << " images " << use.images
+		                                     << " loads " << use.loads << " unloads " << use.unloads << " composeMs " << ComposeMs << '\n';
+	}
 	if (renderer == nullptr) return false;
 	const int w = palSurface->w * Scale;
 	const int h = palSurface->h * Scale;

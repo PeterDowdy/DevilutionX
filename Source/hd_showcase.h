@@ -19,6 +19,7 @@
  *   die [keep]                                       the player dies where they stand; a death in the dungeon drops everything worn, so
  *                                                    it plays the light armour's death: `keep` leaves the armour on (as a duel's death does)
  *   shot <name>                                      dump <name>.json (the camera) and hd-/low-/ids-<name>.png
+ *   mem <label>                                      log what the HD images take (hd::Memory) and the process's resident memory (VmRSS, VmHWM)
  *   quit
  *
  * Every tick the level is fully lit, monsters are gone and the player is not drawn (unless `dim` and `hero` say otherwise).

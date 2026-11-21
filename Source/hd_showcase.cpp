@@ -275,6 +275,19 @@ void AfterGameTick()
 	} else if (command.verb == "shot" && !command.args.empty()) {
 		WriteCamera(command.args[0]);
 		hd::RequestDump(command.args[0]);
+	} else if (command.verb == "mem") {
+		const hd::MemoryUse use = hd::Memory();
+		std::string rss = "?", hwm = "?";
+		std::ifstream status("/proc/self/status");
+		for (std::string line; std::getline(status, line);) {
+			if (line.rfind("VmRSS:", 0) == 0) rss = line.substr(6);
+			if (line.rfind("VmHWM:", 0) == 0) hwm = line.substr(6);
+		}
+		const auto trim = [](std::string &s) { s.erase(0, s.find_first_not_of(" \t")); };
+		trim(rss);
+		trim(hwm);
+		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} loads {} unloads {} rss {} hwm {}", command.args.empty() ? "" : command.args[0], use.bytes, use.peak,
+		    use.images, use.loads, use.unloads, rss, hwm);
 	} else if (command.verb == "quit") {
 		diablo_quit(0);
 	} else {

@@ -93,6 +93,14 @@
  * to the surface the sprite is drawn into, covered by whatever is drawn after the sprite, and absent while the sprite itself draws no
  * pixel (clipped away at the edge of the view). Without "silhouette free" a box only says where the picture sits. Effect layers stay
  * relative to the sprite's top-left. A frame without the chunk is drawn exactly as before.
+ *
+ * Memory: an image is loaded when a sprite frame (or pillar) is first drawn with it, and belongs to the sprite data it was registered for
+ * (RegisterSprites): when the game frees that data (a hero's graphics swapped for another weapon or armour, a level's monsters, missiles),
+ * the images only it held are let go, as soon as no pixel of the screen (or of a tracked off-screen buffer, or an effect layer) still shows
+ * them; drawn again, they are loaded again, the same. Pillars belong to their tileset, an effect layer to the art it lights. As a safety net,
+ * DEVILUTIONX_HD_MEMORY_MB (or "memory <MB>" in hd.txt) bounds what images that are still held but haven't been drawn for a while may take:
+ * above it the longest unused are let go first (0: no bound). DEVILUTIONX_HD_UNLOAD=0 keeps every image once loaded (for comparisons);
+ * DEVILUTIONX_HD_MEMLOG=<file> logs what the images take every 300 presents.
  */
 
 #include <cstddef>
@@ -206,9 +214,32 @@ int PackScale();
  */
 int MonsterLight(std::string_view spritePath, std::string_view trnFile);
 
-/** Remembers which file, group and frame each sprite of a freshly loaded CEL/CL2 file is. ``path`` may carry an extension. */
-void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites);
-void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list);
+/**
+ * Remembers which file, group and frame each sprite of a freshly loaded CEL/CL2 file is. ``path`` may carry an extension. ``owner``: the start
+ * of the data the game will free (ClxFreeHook, ForgetSprites), when the sprites are part of a larger buffer (a sheet read from several files,
+ * a monster type's animations read together); by default the sprites' own data.
+ */
+void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites, const void *owner = nullptr);
+void RegisterSpriteList(std::string_view path, uint16_t group, ClxSpriteList list, const void *owner = nullptr);
+
+/**
+ * The game frees the sprite data registered with ``owner``: forgets its sprites, and lets go of the HD images only they held (see "Memory" at
+ * the top of this file). Owned CLX lists and sheets call it as they are freed (ClxFreeHook); other buffers (monster.cpp) call it themselves.
+ */
+void ForgetSprites(const void *owner);
+
+/** What the HD images take (see "Memory" at the top of this file). */
+struct MemoryUse {
+	size_t bytes = 0;      ///< the loaded images' pixels (and free-silhouette reach) now
+	size_t peak = 0;       ///< the most they took at once
+	uint32_t images = 0;   ///< images loaded now
+	uint32_t loads = 0;    ///< images loaded since the pack loaded (again after being let go included)
+	uint32_t unloads = 0;  ///< images let go since the pack loaded
+};
+MemoryUse Memory();
+
+/** Whether the pixels of the pack image ``file`` ("sprite/<path>/<group>.<frame>.png") are loaded now. */
+bool Loaded(std::string_view file);
 
 /**
  * ClxApplyTrans recolours sprites in place. For a sprite with HD art the layer keeps its original pixels and

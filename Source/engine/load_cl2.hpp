@@ -75,7 +75,7 @@ std::expected<OwnedClxSpriteSheet, std::string> LoadMultipleCl2Sheet(tl::functio
 #else
 	OwnedClxSpriteSheet sheet = Cl2ToClx(std::move(data), accumulatedSize, frameWidth).sheet();
 	for (size_t i = 0; i < count; ++i)
-		hd::RegisterSpriteList(paths[i].data(), 0, ClxSpriteSheet { sheet }[i]); // one file per list
+		hd::RegisterSpriteList(paths[i].data(), 0, ClxSpriteSheet { sheet }[i], ClxSpriteSheet { sheet }.data()); // one file per list
 	return sheet;
 #endif
 }

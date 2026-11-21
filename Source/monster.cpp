@@ -3633,6 +3633,7 @@ std::expected<void, std::string> InitMonsterGFX(CMonster &monsterType, MonsterSp
 	const MonsterData &monsterData = MonstersData[mtype];
 	if (spritesData.data == nullptr)
 		spritesData = LoadMonsterSpritesData(monsterData);
+	if (monsterType.animData != nullptr) hd::ForgetSprites(monsterType.animData.get());
 	monsterType.animData = std::move(spritesData.data);
 
 	const size_t numAnims = GetNumAnims(monsterData);
@@ -3649,7 +3650,7 @@ std::expected<void, std::string> InitMonsterGFX(CMonster &monsterType, MonsterSp
 		if (hd::Enabled()) { // the files were read together, so the loader couldn't say which file each sprite is
 			char path[64];
 			*BufCopy(path, "monsters\\", monsterData.spritePath(), std::string_view(&Animletter[i], 1)) = '\0';
-			hd::RegisterSprites(path, *monsterType.anims[i].sprites);
+			hd::RegisterSprites(path, *monsterType.anims[i].sprites, monsterType.animData.get());
 		}
 		++j;
 	}
@@ -4430,6 +4431,7 @@ void ProcessMonsters()
 void FreeMonsters()
 {
 	for (CMonster &monsterType : LevelMonsterTypes) {
+		if (monsterType.animData != nullptr) hd::ForgetSprites(monsterType.animData.get());
 		monsterType.animData = nullptr;
 		monsterType.corpseId = 0;
 		for (AnimStruct &animData : monsterType.anims) {

@@ -9,6 +9,8 @@
 #include <fstream>
 #include <functional>
 #include <iterator>
+#include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -1405,6 +1407,175 @@ TEST(HdTest, AUniqueItemCanHaveArtOfItsOwn)
 	SDL_FreeSurface(argb);
 	SDL_FreeSurface(pal);
 	fs::remove_all(pack);
+}
+
+/** An owned copy of a CLX list, as the game loads them: freeing it tells the HD layer (ClxFreeHook). */
+OwnedClxSpriteList Owned(const std::vector<uint8_t> &data)
+{
+	std::unique_ptr<uint8_t[]> copy { new uint8_t[data.size()] };
+	std::copy(data.begin(), data.end(), copy.get());
+	return OwnedClxSpriteList { std::move(copy) };
+}
+
+/** The pixels of the dumped HD frame ``name``. */
+std::vector<uint32_t> DumpedFrame(const fs::path &dump, const std::string &name)
+{
+	SDL_Surface *loaded = IMG_LoadPNG((dump / ("hd-" + name + ".png")).string().c_str());
+	if (loaded == nullptr) return {};
+	SDL_Surface *argb = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_ARGB8888, 0);
+	SDL_FreeSurface(loaded);
+	std::vector<uint32_t> pixels;
+	for (int y = 0; y < argb->h; ++y) {
+		const auto *row = reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(argb->pixels) + static_cast<size_t>(y) * argb->pitch);
+		pixels.insert(pixels.end(), row, row + argb->w);
+	}
+	SDL_FreeSurface(argb);
+	return pixels;
+}
+
+/** A pack of one sprite's art (``file``: 8 x 8 of 64 colours, so that a frame drawn from it shows whether every pixel came back the same). */
+struct MemoryPack {
+	fs::path pack;
+	fs::path dump;
+	SDL_Surface *pal = nullptr;
+
+	MemoryPack(const std::string &name, const std::string &file, const char *budgetMb = nullptr)
+	{
+		pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+		dump = pack / "dump";
+		fs::remove_all(pack);
+		fs::create_directories(dump);
+		fs::create_directories(pack / "palettes");
+		const std::array<SDL_Color, 256> colors = Palette();
+		{
+			std::ofstream palFile(pack / "palettes/test.pal", std::ios::binary);
+			for (const SDL_Color &c : colors)
+				palFile << c.r << c.g << c.b;
+			std::ofstream index(pack / "hd.txt");
+			index << "scale 2\n";
+			fs::create_directories((pack / file).parent_path());
+			SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 32, SDL_PIXELFORMAT_ARGB8888);
+			for (int y = 0; y < 8; ++y)
+				for (int x = 0; x < 8; ++x)
+					static_cast<uint32_t *>(s->pixels)[y * (s->pitch / 4) + x] = SDL_MapRGBA(s->format, 40 + 20 * x, 40 + 20 * y, 90, 255);
+			IMG_SavePNG(s, (pack / file).string().c_str());
+			SDL_FreeSurface(s);
+			index << "image " << file << " palettes/test.pal\n";
+		}
+		setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+		setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+		setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+		if (budgetMb != nullptr)
+			setenv("DEVILUTIONX_HD_MEMORY_MB", budgetMb, 1);
+		else
+			unsetenv("DEVILUTIONX_HD_MEMORY_MB");
+		hd::Init();
+		pal = SDL_CreateRGBSurfaceWithFormat(0, 16, 8, 8, SDL_PIXELFORMAT_INDEX8);
+		SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+		SDL_FillRect(pal, nullptr, 0);
+		hd::SetTarget(pal);
+	}
+
+	~MemoryPack()
+	{
+		unsetenv("DEVILUTIONX_HD_MEMORY_MB");
+		SDL_FreeSurface(pal);
+		fs::remove_all(pack);
+	}
+
+	/** Frames of the game view drawn anew with nothing in it (the hero's gone elsewhere), ``n`` times. */
+	void EmptyFrames(int n) const
+	{
+		for (int i = 0; i < n; ++i) {
+			hd::ForgetView(Surface(pal));
+			hd::Present(nullptr, pal);
+		}
+	}
+
+	/** A frame of the game view showing ``sprites`` side by side, dumped as ``name``. */
+	std::vector<uint32_t> Frame(const std::string &name, const std::vector<ClxSprite> &sprites) const
+	{
+		const Surface out(pal);
+		hd::ForgetView(out);
+		for (size_t i = 0; i < sprites.size(); ++i)
+			ClxDraw(out, { static_cast<int>(i) * 8, 3 }, sprites[i]);
+		hd::RequestDump(name);
+		hd::Present(nullptr, pal);
+		return DumpedFrame(dump, name);
+	}
+};
+
+TEST(HdTest, ArtIsLetGoOfWhenTheGameFreesItsSpritesAndDrawsTheSameWhenLoadedAgain)
+{
+	const MemoryPack pack("unload", "sprite/unload/a/0.0.png");
+	ASSERT_TRUE(hd::Enabled());
+	const hd::MemoryUse before = hd::Memory();
+
+	// Two heroes in the same gear: two copies of one file, one image
+	std::optional<OwnedClxSpriteList> first = Owned(Sprite());
+	std::optional<OwnedClxSpriteList> second = Owned(Sprite());
+	hd::RegisterSpriteList("Unload\\A.CL2", 0, *first);
+	hd::RegisterSpriteList("Unload\\A.CL2", 0, *second);
+	EXPECT_FALSE(hd::Loaded("sprite/unload/a/0.0.png")) << "loaded when first drawn";
+	const std::vector<uint32_t> drawn = pack.Frame("drawn", { (*first)[0], (*second)[0] });
+	ASSERT_FALSE(drawn.empty());
+	EXPECT_TRUE(hd::Loaded("sprite/unload/a/0.0.png"));
+	EXPECT_EQ(hd::Memory().loads, before.loads + 1);
+
+	first.reset(); // one hero changes gear: the other still draws the image
+	pack.EmptyFrames(20);
+	EXPECT_TRUE(hd::Loaded("sprite/unload/a/0.0.png"));
+
+	second.reset(); // nothing draws it any more
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded("sprite/unload/a/0.0.png"));
+
+	// Loaded again (perhaps at the same address), it draws exactly as before
+	const OwnedClxSpriteList again = Owned(Sprite());
+	hd::RegisterSpriteList("Unload\\A.CL2", 0, again);
+	const std::vector<uint32_t> redrawn = pack.Frame("redrawn", { again[0], again[0] });
+	EXPECT_TRUE(hd::Loaded("sprite/unload/a/0.0.png"));
+	EXPECT_EQ(hd::Memory().loads, before.loads + 2);
+	EXPECT_TRUE(redrawn == drawn);
+}
+
+TEST(HdTest, ArtStaysWhileTheSameSpritesAreLoadedAgainRightAway)
+{
+	const MemoryPack pack("unload_grace", "sprite/unloadgrace/a/0.0.png");
+	const hd::MemoryUse before = hd::Memory();
+	std::optional<OwnedClxSpriteList> sprites = Owned(Sprite());
+	hd::RegisterSpriteList("UnloadGrace\\A.CL2", 0, *sprites);
+	const std::vector<uint32_t> drawn = pack.Frame("drawn", { (*sprites)[0] });
+	// A level change: the hero's graphics are freed, the loading screen shows for a while, and the same ones are loaded for the new level
+	sprites.reset();
+	for (int i = 0; i < 100; ++i)
+		hd::Present(nullptr, pack.pal);
+	sprites = Owned(Sprite());
+	hd::RegisterSpriteList("UnloadGrace\\A.CL2", 0, *sprites);
+	const std::vector<uint32_t> redrawn = pack.Frame("redrawn", { (*sprites)[0] });
+	pack.EmptyFrames(1);
+	EXPECT_EQ(hd::Memory().loads, before.loads + 1) << "drawn from the image it had";
+	EXPECT_TRUE(hd::Loaded("sprite/unloadgrace/a/0.0.png"));
+	EXPECT_TRUE(redrawn == drawn);
+}
+
+TEST(HdTest, TheBudgetLetsGoOfIdleArtThatIsLoadedAgainWhenDrawn)
+{
+	const MemoryPack pack("unload_budget", "sprite/unloadbudget/a/0.0.png", "0.0001"); // about 100 bytes: less than the image
+	const hd::MemoryUse before = hd::Memory();
+	const OwnedClxSpriteList sprites = Owned(Sprite());
+	hd::RegisterSpriteList("UnloadBudget\\A.CL2", 0, sprites);
+	const std::vector<uint32_t> drawn = pack.Frame("drawn", { sprites[0] });
+	EXPECT_EQ(hd::Memory().loads, before.loads + 1);
+	pack.EmptyFrames(100); // not idle for long enough
+	const std::vector<uint32_t> soon = pack.Frame("soon", { sprites[0] });
+	EXPECT_EQ(hd::Memory().loads, before.loads + 1) << "still loaded";
+	pack.EmptyFrames(700); // idle, and the budget is exceeded: let go of, though its sprite is still registered
+	EXPECT_FALSE(hd::Loaded("sprite/unloadbudget/a/0.0.png"));
+	const std::vector<uint32_t> redrawn = pack.Frame("redrawn", { sprites[0] });
+	EXPECT_EQ(hd::Memory().loads, before.loads + 2) << "loaded again";
+	EXPECT_TRUE(soon == drawn);
+	EXPECT_TRUE(redrawn == drawn);
 }
 
 } // namespace
