@@ -2,9 +2,15 @@
 #include "control.hpp"
 #include "control_panel.hpp"
 
+#include <optional>
+#include <vector>
+
 #include "control/control_chat_commands.hpp"
 #include "engine/backbuffer_state.hpp"
+#include "engine/rectangle.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/primitive_render.hpp"
+#include "engine/size.hpp"
 #include "options.h"
 #include "panels/console.hpp"
 #include "panels/mainpanel.hpp"
@@ -17,7 +23,7 @@ namespace devilution {
 
 std::optional<TextInputState> ChatInputState;
 char TalkMessage[MAX_SEND_STR_LEN];
-bool TalkButtonsDown[3];
+bool TalkButtonsDown[MAX_PLRS - 1];
 int sgbPlrTalkTbl;
 bool WhisperList[MAX_PLRS];
 OptionalOwnedClxSpriteList talkButtons;
@@ -29,9 +35,50 @@ uint8_t TalkSaveIndex;
 uint8_t NextTalkSave;
 TextInputCursorState ChatCursor;
 
-int MuteButtons = 3;
-int MuteButtonPadding = 2;
-Rectangle MuteButtonRect { { 172, 69 }, { 61, 16 } };
+/** The panel art has three voice (mute) buttons; with more players the other rows are drawn above the panel. */
+constexpr int PanelMuteRows = 3;
+constexpr int MuteRowHeight = 18;
+constexpr Size MuteButtonSize { 61, 16 };
+
+/**
+ * @brief The player each mute row stands for. Rows 0-2 (on the panel) are the other player slots in id order, as in
+ * the original game, an empty slot keeping its row; the rows above the panel list only the remaining slots that hold
+ * a player, so a small game shows no empty rows there.
+ */
+std::vector<size_t> MuteRowPlayers()
+{
+	std::vector<size_t> rows;
+	for (size_t i = 0; i < Players.size(); i++) {
+		if (&Players[i] == MyPlayer)
+			continue;
+		if (rows.size() < PanelMuteRows || Players[i].plractive)
+			rows.push_back(i);
+	}
+	return rows;
+}
+
+/** @brief Bottom left corner of a mute row's button (sprites are drawn from the bottom left). */
+Point MuteButtonPosition(int row, size_t rowCount)
+{
+	const Point mainPanelPosition = GetMainPanel().position;
+	if (row < PanelMuteRows)
+		return mainPanelPosition + Displacement { 172, 84 + (MuteRowHeight * row) };
+	// Above the panel, in order from the top; the lowest row ends 4 pixels above the panel.
+	const int rowsAbove = static_cast<int>(rowCount) - PanelMuteRows;
+	const int fromBottom = rowsAbove - 1 - (row - PanelMuteRows);
+	return mainPanelPosition + Displacement { 172, -4 - (MuteRowHeight * fromBottom) };
+}
+
+std::optional<int> MuteRowAt(Point mouse, size_t rowCount)
+{
+	for (int row = 0; row < static_cast<int>(rowCount); row++) {
+		const Point bottomLeft = MuteButtonPosition(row, rowCount);
+		const Rectangle button { { bottomLeft.x, bottomLeft.y - MuteButtonSize.height + 1 }, MuteButtonSize };
+		if (button.contains(mouse))
+			return row;
+	}
+	return std::nullopt;
+}
 
 void ResetChatMessage()
 {
@@ -119,18 +166,27 @@ void DrawChatBox(const Surface &out)
 	    });
 	ChatInputState->truncate(len);
 
-	x += 46;
-	int talkBtn = 0;
-	for (size_t i = 0; i < Players.size(); i++) {
+	const std::vector<size_t> rows = MuteRowPlayers();
+	if (rows.size() > PanelMuteRows) {
+		// A dark backing for the rows above the panel, so the buttons and names read over the game view.
+		const Point top = MuteButtonPosition(PanelMuteRows, rows.size()) + Displacement { -4, -MuteButtonSize.height - 1 };
+		const int height = (MuteRowHeight * static_cast<int>(rows.size() - PanelMuteRows)) + 3;
+		DrawHalfTransparentRectTo(out, top.x, top.y, 290, height);
+		DrawHalfTransparentRectTo(out, top.x, top.y, 290, height);
+	}
+	for (int talkBtn = 0; talkBtn < static_cast<int>(rows.size()); talkBtn++) {
+		const size_t i = rows[talkBtn];
 		Player &player = Players[i];
-		if (&player == MyPlayer)
-			continue;
 
 		const UiFlags color = player.friendlyMode ? UiFlags::ColorWhitegold : UiFlags::ColorRed;
-		const Point talkPanPosition = mainPanelPosition + Displacement { 172, 84 + (18 * talkBtn) };
+		const Point talkPanPosition = MuteButtonPosition(talkBtn, rows.size());
 		if (WhisperList[i]) {
 			// the normal (unpressed) voice button is pre-rendered on the panel, only need to draw over it when the button is held
-			if (TalkButtonsDown[talkBtn]) {
+			if (!TalkButtonsDown[talkBtn] && talkBtn >= PanelMuteRows) {
+				// above the panel nothing is pre-rendered: copy the panel's second (wingless) button
+				DrawPanelBox(out, MakeSdlRect(172, sgbPlrTalkTbl + 69 + MuteRowHeight, MuteButtonSize.width, MuteButtonSize.height),
+				    talkPanPosition + Displacement { 0, -MuteButtonSize.height + 1 });
+			} else if (TalkButtonsDown[talkBtn]) {
 				const unsigned spriteIndex = talkBtn == 0 ? 2 : 3; // the first button sprite includes a tip from the devils wing so is different to the rest.
 				ClxDraw(out, talkPanPosition, (*talkButtons)[spriteIndex]);
 
@@ -149,10 +205,8 @@ void DrawChatBox(const Surface &out)
 			RenderClxSprite(out, (*TalkButton)[TalkButtonsDown[talkBtn] ? 1 : 0], talkPanPosition + Displacement { 4, -15 });
 		}
 		if (player.plractive) {
-			DrawString(out, player._pName, { { x, y + 60 + (talkBtn * 18) }, { 204, 0 } }, { .flags = color });
+			DrawString(out, player._pName, { { talkPanPosition.x + 74, talkPanPosition.y - 14 }, { 204, 0 } }, { .flags = color });
 		}
-
-		talkBtn++;
 	}
 }
 
@@ -161,22 +215,15 @@ bool CheckMuteButton()
 	if (!ChatFlag)
 		return false;
 
-	Rectangle buttons = MuteButtonRect;
-
-	SetPanelObjectPosition(UiPanels::Main, buttons);
-
-	buttons.size.height = (MuteButtons * buttons.size.height) + ((MuteButtons - 1) * MuteButtonPadding);
-
-	if (!buttons.contains(MousePosition))
+	const std::optional<int> row = MuteRowAt(MousePosition, MuteRowPlayers().size());
+	if (!row)
 		return false;
 
 	for (bool &talkButtonDown : TalkButtonsDown) {
 		talkButtonDown = false;
 	}
 
-	const Point mainPanelPosition = GetMainPanel().position;
-
-	TalkButtonsDown[(MousePosition.y - (69 + mainPanelPosition.y)) / 18] = true;
+	TalkButtonsDown[*row] = true;
 
 	return true;
 }
@@ -189,24 +236,12 @@ void CheckMuteButtonUp()
 	for (bool &talkButtonDown : TalkButtonsDown)
 		talkButtonDown = false;
 
-	Rectangle buttons = MuteButtonRect;
-
-	SetPanelObjectPosition(UiPanels::Main, buttons);
-
-	buttons.size.height = (MuteButtons * buttons.size.height) + ((MuteButtons - 1) * MuteButtonPadding);
-
-	if (!buttons.contains(MousePosition))
+	const std::vector<size_t> rows = MuteRowPlayers();
+	const std::optional<int> row = MuteRowAt(MousePosition, rows.size());
+	if (!row)
 		return;
 
-	int off = (MousePosition.y - buttons.position.y) / (MuteButtonRect.size.height + MuteButtonPadding);
-
-	size_t playerId = 0;
-	for (; playerId < Players.size() && off != -1; ++playerId) {
-		if (playerId != MyPlayerId)
-			off--;
-	}
-	if (playerId > 0 && playerId <= Players.size())
-		WhisperList[playerId - 1] = !WhisperList[playerId - 1];
+	WhisperList[rows[*row]] = !WhisperList[rows[*row]];
 }
 
 void TypeChatMessage()

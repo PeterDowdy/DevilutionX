@@ -32,6 +32,7 @@ set(tests
   multi_logging_test
   pack_test
   player_test
+  players8_test
   quests_test
   reencode_dun_cels_test
   scrollrt_test

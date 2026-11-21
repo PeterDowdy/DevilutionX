@@ -54,6 +54,9 @@ namespace {
 
 constexpr size_t MaxMissilesForSaveGame = 125;
 constexpr size_t PlayerWalkPathSizeForSaveGame = 25;
+/** A save holds four portal records, as in the original game, whatever MAXPORTAL is (single player uses the first). */
+constexpr int PortalsForSaveGame = 4;
+static_assert(MAXPORTAL >= PortalsForSaveGame);
 
 uint8_t giNumberQuests;
 uint8_t giNumberOfSmithPremiumItems;
@@ -722,7 +725,7 @@ bool gbSkipSync = false;
 	monster.uniqTrans = file->NextLE<uint8_t>();
 	monster.corpseId = file->NextLE<int8_t>();
 
-	monster.whoHit = file->NextLE<int8_t>();
+	monster.whoHit = file->NextLE<uint8_t>();
 	if (monsterConversionData != nullptr)
 		monsterConversionData->monsterLevel = file->NextLE<int8_t>();
 	else
@@ -1571,7 +1574,7 @@ void SaveMonster(SaveHelper *file, Monster &monster, MonsterConversionData *mons
 	file->WriteLE<uint8_t>(monster.uniqTrans);
 	file->WriteLE<int8_t>(monster.corpseId);
 
-	file->WriteLE<int8_t>(monster.whoHit);
+	file->WriteLE<uint8_t>(monster.whoHit);
 	if (monsterConversionData != nullptr)
 		file->WriteLE<int8_t>(monsterConversionData->monsterLevel);
 	else
@@ -2532,8 +2535,10 @@ std::expected<void, std::string> LoadGame(bool firstflag)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		LoadQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
+	for (int i = 0; i < PortalsForSaveGame; i++)
 		LoadPortal(&file, i);
+	for (int i = PortalsForSaveGame; i < MAXPORTAL; i++)
+		Portals[i].open = false;
 
 	if (gbIsHellfireSaveGame != gbIsHellfire) {
 		RETURN_IF_ERROR(pfile_convert_levels());
@@ -2817,7 +2822,7 @@ void SaveGameData(SaveWriter &saveWriter)
 
 	for (int i = 0; i < giNumberQuests; i++)
 		SaveQuest(&file, i);
-	for (int i = 0; i < MAXPORTAL; i++)
+	for (int i = 0; i < PortalsForSaveGame; i++)
 		SavePortal(&file, i);
 	for (size_t i = 0; i < MonstersData.size(); ++i) {
 		const int monstkill = MonsterKillCounts[i];

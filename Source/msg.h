@@ -688,7 +688,7 @@ struct TSyncMonster {
 	uint8_t _menemy;
 	uint8_t _mdelta;
 	int32_t _mhitpoints;
-	int8_t mWhoHit;
+	uint8_t mWhoHit;
 };
 
 struct TPktHdr {

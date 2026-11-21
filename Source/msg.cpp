@@ -221,7 +221,7 @@ struct DMonsterStr {
 	uint8_t menemy;
 	uint8_t mactive;
 	int32_t hitPoints;
-	int8_t mWhoHit;
+	uint8_t mWhoHit;
 };
 #pragma pack(pop)
 

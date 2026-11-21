@@ -5061,9 +5061,11 @@ bool Monster::isPossibleToHit() const
 	    && (!IsAnyOf(type().type, MT_COUNSLR, MT_MAGISTR, MT_CABALIST, MT_ADVOCATE) || goal == MonsterGoal::Normal);
 }
 
+static_assert(MAX_PLRS <= 8, "Monster::whoHit is an 8-bit mask of player ids");
+
 void Monster::tag(const Player &tagger)
 {
-	whoHit |= 1 << tagger.getId();
+	whoHit |= static_cast<uint8_t>(1U << tagger.getId());
 }
 
 bool Monster::tryLiftGargoyle()

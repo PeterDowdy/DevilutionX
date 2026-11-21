@@ -3188,13 +3188,19 @@ std::expected<void, std::string> LoadGameLevelDungeon(bool firstflag, lvl_entry 
 
 void LoadGameLevelSyncPlayerEntry(lvl_entry lvldir)
 {
-	for (Player &player : Players) {
-		if (player.plractive && player.isOnActiveLevel() && (!player._pLvlChanging || &player == MyPlayer)) {
-			if (player._pHitPoints > 0) {
-				if (lvldir != ENTRY_LOAD)
-					SyncInitPlrPos(player);
-			} else {
-				dFlags[player.position.tile.x][player.position.tile.y] |= DungeonFlag::DeadPlayer;
+	// The players already on the level first, then the local player, so it never takes a square one of them stands on
+	// (in id order a lower id was placed before the others were on the map, and two clients then disagreed).
+	for (const bool local : { false, true }) {
+		for (Player &player : Players) {
+			if ((&player == MyPlayer) != local)
+				continue;
+			if (player.plractive && player.isOnActiveLevel() && (!player._pLvlChanging || &player == MyPlayer)) {
+				if (player._pHitPoints > 0) {
+					if (lvldir != ENTRY_LOAD)
+						SyncInitPlrPos(player, local && gbIsMultiplayer ? player.getId() : 0);
+				} else {
+					dFlags[player.position.tile.x][player.position.tile.y] |= DungeonFlag::DeadPlayer;
+				}
 			}
 		}
 	}

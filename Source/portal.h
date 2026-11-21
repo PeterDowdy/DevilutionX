@@ -5,6 +5,8 @@
  */
 #pragma once
 
+#include <cstddef>
+
 #include "engine/point.hpp"
 #include "levels/gendung.h"
 
@@ -13,7 +15,8 @@ namespace devilution {
 // Defined in player.h, forward declared here to allow for functions which operate in the context of a player.
 struct Player;
 
-#define MAXPORTAL 4
+/** One town portal per player: equals MAX_PLRS (checked in portal.cpp). Saves keep four records (loadsave.cpp). */
+#define MAXPORTAL 8
 
 struct Portal {
 	bool open;
@@ -25,6 +28,8 @@ struct Portal {
 
 extern Portal Portals[MAXPORTAL];
 
+/** @brief Where a player's town portal opens in town (players 1-4 at the original spots). */
+Point GetPortalTownPosition(size_t playerId);
 void InitPortals();
 void SetPortalStats(int i, bool o, Point position, int lvl, dungeon_type lvltype, bool isSetLevel);
 void AddPortalMissile(const Player &player, Point position, bool sync);

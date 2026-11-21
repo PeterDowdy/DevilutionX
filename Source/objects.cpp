@@ -3138,11 +3138,18 @@ void OperateBookcase(Object &bookcase, bool sendmsg, bool sendLootMsg)
 	CreateTypeItem(bookcase.position, false, ItemType::Misc, IMISC_BOOK, sendLootMsg, false);
 
 	if (Quests[Q_ZHAR].IsAvailable()) {
-		Monster &zhar = Monsters[MAX_PLRS];
-		if (zhar.mode == MonsterMode::Stand // prevents playing the "angry" message for the second time if zhar got aggroed by losing vision and talking again
-		    && zhar.uniqueType == UniqueMonsterType::Zhar
-		    && zhar.activeForTicks == UINT8_MAX
-		    && zhar.hitPoints > 0) {
+		// Zhar is the first monster after the golem slots, which used to equal MAX_PLRS; look him up by type instead.
+		Monster *zharFound = nullptr;
+		for (size_t i = 0; i < ActiveMonsterCount; i++) {
+			if (Monsters[ActiveMonsters[i]].uniqueType == UniqueMonsterType::Zhar) {
+				zharFound = &Monsters[ActiveMonsters[i]];
+				break;
+			}
+		}
+		if (zharFound != nullptr && zharFound->mode == MonsterMode::Stand // prevents playing the "angry" message for the second time if zhar got aggroed by losing vision and talking again
+		    && zharFound->activeForTicks == UINT8_MAX
+		    && zharFound->hitPoints > 0) {
+			Monster &zhar = *zharFound;
 			zhar.talkMsg = TEXT_ZHAR2;
 			M_StartStand(zhar, zhar.direction); // BUGFIX: first parameter in call to M_StartStand should be MAX_PLRS, not 0. (fixed)
 			zhar.goal = MonsterGoal::Attack;

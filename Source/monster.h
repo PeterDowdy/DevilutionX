@@ -274,7 +274,8 @@ struct Monster { // note: missing field _mAFNum
 	UniqueMonsterType uniqueType;
 	uint8_t uniqTrans;
 	int8_t corpseId;
-	int8_t whoHit;
+	/** Bit mask of the players who hit this monster (bit = player id); unsigned so player 8 is bit 7, not a sign. */
+	uint8_t whoHit;
 	uint8_t minDamage;
 	uint8_t maxDamage;
 	uint8_t minDamageSpecial;

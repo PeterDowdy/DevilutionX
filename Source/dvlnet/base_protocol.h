@@ -383,7 +383,8 @@ std::expected<void, PacketError> base_protocol<P>::recv_decrypted(packet &pkt, e
 		if (gameData.size != sizeof(GameData))
 			return {};
 		std::vector<std::string> playerNames;
-		for (size_t i = 0; i < Players.size(); i++) {
+		// The reply holds MAX_PLRS name slots (whatever this client's Players happens to hold while it browses).
+		for (size_t i = 0; i < MAX_PLRS; i++) {
 			std::string_view playerNameBuffer {
 				reinterpret_cast<const char *>(infoBuffer.data() + sizeof(GameData) + (i * PlayerNameLength)),
 				PlayerNameLength
@@ -419,8 +420,8 @@ std::expected<void, PacketError> base_protocol<P>::recv_ingame(packet &pkt, endp
 				buffer_t buf;
 				buf.resize(game_init_info.size() + (PlayerNameLength * MAX_PLRS) + gamename.size());
 				std::memcpy(buf.data(), &game_init_info[0], game_init_info.size());
-				for (size_t i = 0; i < Players.size(); i++) {
-					if (Players[i].plractive) {
+				for (size_t i = 0; i < MAX_PLRS; i++) {
+					if (i < Players.size() && Players[i].plractive) {
 						std::memcpy(buf.data() + game_init_info.size() + (i * PlayerNameLength), &Players[i]._pName, PlayerNameLength);
 					} else {
 						std::memset(buf.data() + game_init_info.size() + (i * PlayerNameLength), '\0', PlayerNameLength);
