@@ -198,7 +198,8 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 
 		// Get the players remaining life
 		// If the player is using mana shield change the color
-		const int lifeTicks = ((player._pHitPoints * PortraitFrameSize.width) + (player._pMaxHP / 2)) / player._pMaxHP;
+		// A player who just joined can be drawn before its first packet header carried its maximum life (0 here)
+		const int lifeTicks = player._pMaxHP > 0 ? ((player._pHitPoints * PortraitFrameSize.width) + (player._pMaxHP / 2)) / player._pMaxHP : 0;
 		const uint8_t hpBarColor = (player.pManaShield) ? PAL8_YELLOW + 5 : PAL8_RED + 4;
 		// Now draw the characters remaining life
 		DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, hpBarColor);
@@ -260,7 +261,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 		pos.y += PortraitFrameSize.height;
 
 		// Get the players remaining mana
-		const int manaTicks = ((player._pMana * PortraitFrameSize.width) + (player._pMaxMana / 2)) / player._pMaxMana;
+		const int manaTicks = player._pMaxMana > 0 ? ((player._pMana * PortraitFrameSize.width) + (player._pMaxMana / 2)) / player._pMaxMana : 0;
 		const uint8_t manaBarColor = PAL8_BLUE + 3;
 		// Now draw the characters remaining mana
 		DrawBar(gameScreen, { pos, { manaTicks, ManaBarHeight } }, manaBarColor);
