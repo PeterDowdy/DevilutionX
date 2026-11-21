@@ -13,6 +13,8 @@
 
 namespace devilution {
 
+static_assert(MAXPORTAL == MAX_PLRS, "one town portal per player");
+
 /** In-game state of portals. */
 Portal Portals[MAXPORTAL];
 
@@ -21,15 +23,16 @@ namespace {
 /** Current portal number (a portal array index). */
 size_t portalindex;
 
-/** Coordinate of each player's portal in town. */
-Point PortalTownPosition[MAXPORTAL] = {
-	{ 57, 40 },
-	{ 59, 40 },
-	{ 61, 40 },
-	{ 63, 40 },
-};
-
 } // namespace
+
+Point GetPortalTownPosition(size_t playerId)
+{
+	// Rows of four, two squares apart: players 1-4 on the original row (57..63, 40), players 5-8 three rows
+	// further south (57..63, 43), where the squares and the arrival squares one down and right are open floor.
+	const int column = static_cast<int>(playerId % 4);
+	const int row = static_cast<int>(playerId / 4);
+	return { 57 + (2 * column), 40 + (3 * row) };
+}
 
 void InitPortals()
 {
@@ -67,7 +70,7 @@ void SyncPortals()
 			continue;
 		const Player &player = Players[i];
 		if (leveltype == DTYPE_TOWN)
-			AddPortalMissile(player, PortalTownPosition[i], true);
+			AddPortalMissile(player, GetPortalTownPosition(i), true);
 		else {
 			int lvl = currlevel;
 			if (setlevel)
@@ -80,7 +83,7 @@ void SyncPortals()
 
 void AddPortalInTown(const Player &player)
 {
-	AddPortalMissile(player, PortalTownPosition[player.getId()], false);
+	AddPortalMissile(player, GetPortalTownPosition(player.getId()), false);
 }
 
 void ActivatePortal(const Player &player, Point position, int lvl, dungeon_type dungeonType, bool isSetLevel)
@@ -163,7 +166,7 @@ void GetPortalLevel()
 void GetPortalLvlPos()
 {
 	if (leveltype == DTYPE_TOWN) {
-		ViewPosition = PortalTownPosition[portalindex] + Displacement { 1, 1 };
+		ViewPosition = GetPortalTownPosition(portalindex) + Displacement { 1, 1 };
 	} else {
 		ViewPosition = Portals[portalindex].position;
 

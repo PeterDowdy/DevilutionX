@@ -30,6 +30,7 @@
 #include "engine/backbuffer_state.hpp"
 #include "engine/displacement.hpp"
 #include "engine/dx.h"
+#include "engine/player_colors.hpp"
 #include "engine/point.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/render/dun_render.hpp"
@@ -57,6 +58,7 @@
 #include "panels/charpanel.hpp"
 #include "panels/console.hpp"
 #include "panels/partypanel.hpp"
+#include "score/score.h"
 #include "panels/quest_log.hpp"
 #include "panels/spell_list.hpp"
 #include "plrmsg.h"
@@ -446,14 +448,8 @@ void DrawPlayerIcons(const Surface &out, const Player &player, Point position, b
 
 uint8_t GetPlayerOutlineColor(int id)
 {
-	static constexpr uint8_t PlayerOutlineColors[] = {
-		OutlineColorsPlayer1,
-		OutlineColorsPlayer2,
-		OutlineColorsPlayer3,
-		OutlineColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerOutlineColors)))
+	static_assert(PlayerOutlineColors[0] == OutlineColorsPlayer1 && PlayerOutlineColors[3] == OutlineColorsPlayer4);
+	if (id < 0 || id >= static_cast<int>(PlayerOutlineColors.size()))
 		return OutlineColorsPlayer1;
 
 	return PlayerOutlineColors[id];
@@ -1446,6 +1442,11 @@ void DrawView(const Surface &out, Point startPosition)
 	if (ChatLogFlag) {
 		DrawChatLog(out);
 	}
+#ifdef DEVILUTIONX_SCORING
+	if (ScoreBoardFlag) {
+		DrawScoreBoard(out);
+	}
+#endif
 	if (MyPlayerIsDead) {
 		RedBack(out);
 		DrawDeathText(out);

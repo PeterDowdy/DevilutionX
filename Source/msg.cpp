@@ -11,6 +11,7 @@
 #include <format>
 #include <list>
 #include <memory>
+#include <vector>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_timer.h>
@@ -52,6 +53,7 @@
 #include "plrmsg.h"
 #include "portals/validation.hpp"
 #include "quests/validation.hpp"
+#include "score/score.h"
 #include "spells.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
@@ -195,6 +197,11 @@ std::string_view CmdIdString(_cmd_id cmd)
 	case CMD_OPENHIVE: return "CMD_OPENHIVE";
 	case CMD_OPENGRAVE: return "CMD_OPENGRAVE";
 	case CMD_SPAWNMONSTER: return "CMD_SPAWNMONSTER";
+#ifdef DEVILUTIONX_SCORING
+	case CMD_SCORE_CLAIM: return "CMD_SCORE_CLAIM";
+	case CMD_SCORE_AWARD: return "CMD_SCORE_AWARD";
+	case CMD_SCORE_TABLE: return "CMD_SCORE_TABLE";
+#endif
 	case FAKE_CMD_SETID: return "FAKE_CMD_SETID";
 	case FAKE_CMD_DROPID: return "FAKE_CMD_DROPID";
 	case CMD_INVALID: return "CMD_INVALID";
@@ -220,7 +227,7 @@ struct DMonsterStr {
 	uint8_t menemy;
 	uint8_t mactive;
 	int32_t hitPoints;
-	int8_t mWhoHit;
+	uint8_t mWhoHit;
 };
 #pragma pack(pop)
 
@@ -299,6 +306,11 @@ ankerl::unordered_dense::map<uint8_t, LocalLevel> LocalLevels;
 DJunk sgJunk;
 uint8_t sgbDeltaChunks;
 std::list<TMegaPkt> MegaPktList;
+/**
+ * @brief Size of every record BufferMessage wrote into MegaPktList, in order, so that PrePacket can step over one
+ * message it must not run (its sender is not valid yet) instead of dropping everything buffered after it.
+ */
+std::vector<size_t> BufferedRecordSizes;
 Item ItemLimbo;
 
 /** @brief Last sent player command for the local player. */
@@ -422,16 +434,21 @@ void GetNextPacket()
 void FreePackets()
 {
 	MegaPktList.clear();
+	BufferedRecordSizes.clear();
 }
 
 void PrePacket()
 {
 	uint8_t playerId = std::numeric_limits<uint8_t>::max();
+	size_t record = 0;
+	size_t skipped = 0;
 	for (TMegaPkt &pkt : MegaPktList) {
 		std::byte *data = pkt.data;
 		size_t remainingBytes = sizeof(pkt.data) - pkt.spaceLeft;
 		while (remainingBytes > 0) {
 			auto cmdId = static_cast<_cmd_id>(*data);
+			const size_t recordSize = record < BufferedRecordSizes.size() ? BufferedRecordSizes[record] : 0;
+			record++;
 
 			if (cmdId == FAKE_CMD_SETID) {
 				auto *cmd = reinterpret_cast<TFakeCmdPlr *>(data);
@@ -456,8 +473,16 @@ void PrePacket()
 
 			if (IsNoneOf(cmdId, CMD_SEND_PLRINFO, CMD_ACK_PLRINFO)) {
 				if (!IsNetPlayerValid(playerId)) {
-					Log("Source of network message is no longer valid");
-					return;
+					// The sender's player info has not arrived (yet): skip this one message, as a live message from
+					// an unknown sender is skipped, and go on with the rest (other players' info among them).
+					if (recordSize == 0 || recordSize > remainingBytes) {
+						Log("Source of network message is no longer valid");
+						return;
+					}
+					skipped++;
+					data += recordSize;
+					remainingBytes -= recordSize;
+					continue;
 				}
 			}
 
@@ -470,6 +495,8 @@ void PrePacket()
 			remainingBytes -= size;
 		}
 	}
+	if (skipped > 0)
+		Log("Skipped {} buffered network messages from players whose info had not arrived", skipped);
 }
 
 void BufferMessage(const void *message, size_t messageSize)
@@ -480,6 +507,7 @@ void BufferMessage(const void *message, size_t messageSize)
 	TMegaPkt &currMegaPkt = MegaPktList.back();
 	memcpy(currMegaPkt.data + sizeof(currMegaPkt.data) - currMegaPkt.spaceLeft, message, messageSize);
 	currMegaPkt.spaceLeft -= messageSize;
+	BufferedRecordSizes.push_back(messageSize);
 }
 
 void BufferMessage(uint8_t pnum, const void *message, size_t messageSize)
@@ -2095,6 +2123,7 @@ size_t OnPlayerDamage(const TCmdDamage &message, Player &player)
 	Player &target = Players[message.bPlr];
 	if (&target == MyPlayer && leveltype != DTYPE_TOWN && gbBufferMsgs != 1) {
 		if (player.isOnActiveLevel() && damage <= 192000 && !target.hasNoLife()) {
+			const ScoreDamageSource scoreSource(player.getId());
 			ApplyPlrDamage(message.damageType, target, 0, 0, static_cast<int>(damage), DeathReason::Player);
 		}
 	}
@@ -2319,6 +2348,9 @@ size_t OnPlayerJoinLevel(const TCmdLocParam2 &message, Player &player)
 		player.plractive = true;
 		gbActivePlayers++;
 		EventPlrMsg(FormatRuntime(_("Player '{:s}' (level {:d}) just joined the game"), player._pName, player.getCharacterLevel()));
+		// This is where the others see a joiner become active (recv_plrinfo covers the joiner seeing them).
+		if (ScoringActive())
+			ScoreOnPlayerActive(player);
 	}
 
 	if (player.plractive && &player != MyPlayer) {
@@ -2832,6 +2864,12 @@ void delta_kill_monster(const Monster &monster, Point position, const Player &pl
 	pD->hitPoints = 0;
 }
 
+bool DeltaIsSpawnedMonster(uint8_t level, size_t monsterId)
+{
+	const auto it = DeltaLevels.find(level);
+	return it != DeltaLevels.end() && it->second.spawnedMonsters.contains(monsterId);
+}
+
 void delta_monster_hp(const Monster &monster, const Player &player)
 {
 	if (!gbIsMultiplayer)
@@ -3203,6 +3241,10 @@ void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item
 {
 	TCmdPItem cmd {};
 
+	// Scoring: an item a player puts down (from the hand, or swapped on pickup) is second-hand from now on.
+	if (IsAnyOf(bCmd, CMD_PUTITEM, CMD_SYNCPUTITEM) && ScoringActive())
+		ScoreOnPlayerDrop(item);
+
 	cmd.bCmd = bCmd;
 	cmd.x = position.x;
 	cmd.y = position.y;
@@ -3502,6 +3544,19 @@ size_t ParseCmd(uint8_t pnum, const TCmd *pCmd, size_t maxCmdSize)
 		return OnOpenGrave(*pCmd);
 	case CMD_SPAWNMONSTER:
 		return HandleCmd(OnSpawnMonster, player, pCmd, maxCmdSize);
+#ifdef DEVILUTIONX_SCORING
+	case CMD_SCORE_CLAIM:
+	case CMD_SCORE_AWARD: {
+		// Kept in order with everything else while a joiner waits for the level data, like the other commands.
+		const bool buffer = gbBufferMsgs == 1;
+		const size_t size = pCmd->bCmd == CMD_SCORE_CLAIM ? ScoreOnClaimCmd(pnum, pCmd, maxCmdSize, !buffer) : ScoreOnAwardCmd(pnum, pCmd, maxCmdSize, !buffer);
+		if (buffer && size != 0)
+			BufferMessage(pnum, pCmd, size);
+		return size;
+	}
+	case CMD_SCORE_TABLE:
+		return ScoreOnTableCmd(pnum, pCmd, maxCmdSize);
+#endif
 	default:
 		break;
 	}

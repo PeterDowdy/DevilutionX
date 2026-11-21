@@ -20,6 +20,7 @@
 #include "engine/points_in_rectangle_range.hpp"
 #include "engine/world_tile.hpp"
 #include "levels/tile_properties.hpp"
+#include "multi.h"
 #include "objects.h"
 #include "player.h"
 #include "utils/attributes.h"
@@ -28,6 +29,8 @@
 #include "vision.hpp"
 
 namespace devilution {
+
+static_assert(MAXVISION == MAX_PLRS, "one vision entry per player");
 
 std::array<bool, MAXVISION> VisionActive;
 Light VisionList[MAXVISION];

@@ -966,7 +966,7 @@ int CalcStatDiff(Player &player);
 #ifdef _DEBUG
 void NextPlrLevel(Player &player);
 #endif
-void AddPlrMonstExper(int lvl, unsigned int exp, char pmask);
+void AddPlrMonstExper(int lvl, unsigned int exp, uint8_t pmask);
 void ApplyPlrDamage(DamageType damageType, Player &player, int dam, int minHP = 0, int frac = 0, DeathReason deathReason = DeathReason::MonsterOrTrap);
 void InitPlayer(Player &player, bool FirstTime);
 void InitMultiView();
@@ -995,6 +995,12 @@ void MakePlrPath(Player &player, Point targetPosition, bool endspace);
 void CheckPlrSpell(bool isShiftHeld, SpellID spellID = MyPlayer->_pRSpell, SpellType spellType = MyPlayer->_pRSplType);
 void SyncPlrAnim(Player &player);
 void SyncInitPlrPos(Player &player);
+/**
+ * @brief Places the player on the first free square near its position, trying the offsets from `preferredOffset` on.
+ * Entering a level, the local player prefers the offset of its own id (multiplayer), so players arriving together
+ * do not pick the same square before they hear of each other.
+ */
+void SyncInitPlrPos(Player &player, size_t preferredOffset);
 void SyncInitPlr(Player &player);
 void CheckStats(Player &player);
 void ModifyPlrStr(Player &player, int l);

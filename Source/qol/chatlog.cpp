@@ -21,6 +21,7 @@
 #include "inv.h"
 #include "minitext.h"
 #include "panels/quest_log.hpp"
+#include "score/score.h"
 #include "stores.h"
 #include "utils/format.hpp"
 #include "utils/language.h"
@@ -107,6 +108,9 @@ void ToggleChatLog()
 		}
 		QuestLogIsOpen = false;
 		HelpFlag = false;
+#ifdef DEVILUTIONX_SCORING
+		ScoreBoardFlag = false;
+#endif
 		CancelCurrentDiabloMsg();
 		gamemenu_off();
 		SkipLines = 0;

@@ -99,6 +99,7 @@
 #include "qol/xpbar.h"
 #include "quick_messages.hpp"
 #include "restrict.h"
+#include "score/score.h"
 #include "stores.h"
 #include "storm/storm_net.hpp"
 #include "storm/storm_svid.h"
@@ -626,6 +627,10 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 			HelpScrollUp();
 		} else if (ChatLogFlag) {
 			ChatLogScrollUp();
+#ifdef DEVILUTIONX_SCORING
+		} else if (ScoreBoardFlag) {
+			ScoreBoardKey(0);
+#endif
 		} else if (AutomapActive) {
 			AutomapUp();
 		} else if (IsStashOpen) {
@@ -641,6 +646,10 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 			HelpScrollDown();
 		} else if (ChatLogFlag) {
 			ChatLogScrollDown();
+#ifdef DEVILUTIONX_SCORING
+		} else if (ScoreBoardFlag) {
+			ScoreBoardKey(1);
+#endif
 		} else if (AutomapActive) {
 			AutomapDown();
 		} else if (IsStashOpen) {
@@ -662,10 +671,22 @@ void PressKey(SDL_Keycode vkey, uint16_t modState)
 		}
 		return;
 	case SDLK_LEFT:
+#ifdef DEVILUTIONX_SCORING
+		if (ScoreBoardFlag && !ChatFlag) {
+			ScoreBoardKey(2);
+			return;
+		}
+#endif
 		if (AutomapActive && !ChatFlag)
 			AutomapLeft();
 		return;
 	case SDLK_RIGHT:
+#ifdef DEVILUTIONX_SCORING
+		if (ScoreBoardFlag && !ChatFlag) {
+			ScoreBoardKey(3);
+			return;
+		}
+#endif
 		if (AutomapActive && !ChatFlag)
 			AutomapRight();
 		return;
@@ -809,6 +830,10 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 				HelpScrollUp();
 			} else if (ChatLogFlag) {
 				ChatLogScrollUp();
+#ifdef DEVILUTIONX_SCORING
+			} else if (ScoreBoardFlag) {
+				ScoreBoardKey(0);
+#endif
 			} else if (IsStashOpen) {
 				Stash.PreviousPage();
 			} else if (SDL_GetModState() & SDL_KMOD_CTRL) {
@@ -827,6 +852,10 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 				HelpScrollDown();
 			} else if (ChatLogFlag) {
 				ChatLogScrollDown();
+#ifdef DEVILUTIONX_SCORING
+			} else if (ScoreBoardFlag) {
+				ScoreBoardKey(1);
+#endif
 			} else if (IsStashOpen) {
 				Stash.NextPage();
 			} else if (SDL_GetModState() & SDL_KMOD_CTRL) {
@@ -1563,6 +1592,8 @@ void GameLogic()
 	sound_update();
 	CheckTriggers();
 	CheckQuests();
+	if (ScoringActive())
+		ScoreTick();
 	RedrawViewport();
 	pfile_update(false);
 
@@ -1797,7 +1828,7 @@ bool CanAutomapBeToggledOff()
 	// check if every window is closed - if yes, automap can be toggled off
 	return !QuestLogIsOpen && !IsWithdrawGoldOpen && !IsStashOpen && !IsVisualStoreOpen && !CharFlag
 	    && !SpellbookFlag && !invflag && !isGameMenuOpen && !qtextflag && !SpellSelectFlag
-	    && !ChatLogFlag && !HelpFlag;
+	    && !ChatLogFlag && !HelpFlag && !ScoreBoardFlag;
 }
 
 void OptionLanguageCodeChanged()
@@ -2044,6 +2075,9 @@ void InitKeymapActions()
 		    ClosePanels();
 		    HelpFlag = false;
 		    ChatLogFlag = false;
+#ifdef DEVILUTIONX_SCORING
+		    ScoreBoardFlag = false;
+#endif
 		    SpellSelectFlag = false;
 		    if (qtextflag && leveltype == DTYPE_TOWN) {
 			    qtextflag = false;
@@ -2140,6 +2174,18 @@ void InitKeymapActions()
 	    [] {
 		    ReorganizeInventory(*MyPlayer);
 	    });
+#ifdef DEVILUTIONX_SCORING
+	options.Keymapper.AddAction(
+	    "ScoreBoard",
+	    N_("Score Board"),
+	    N_("Shows the places of a game with scoring on (and the final scores after the end)."),
+	    'K',
+	    [] {
+		    ToggleScoreBoard();
+	    },
+	    nullptr,
+	    ScoringActive);
+#endif
 #ifdef _DEBUG
 	options.Keymapper.AddAction(
 	    "OpenConsole",
@@ -2562,6 +2608,9 @@ void InitPadmapActions()
 		    ClosePanels();
 		    HelpFlag = false;
 		    ChatLogFlag = false;
+#ifdef DEVILUTIONX_SCORING
+		    ScoreBoardFlag = false;
+#endif
 		    SpellSelectFlag = false;
 		    if (qtextflag && leveltype == DTYPE_TOWN) {
 			    qtextflag = false;
@@ -3002,6 +3051,13 @@ bool PressEscKey()
 		rv = true;
 	}
 
+#ifdef DEVILUTIONX_SCORING
+	if (ScoreBoardFlag) {
+		ScoreBoardFlag = false;
+		rv = true;
+	}
+#endif
+
 	if (qtextflag) {
 		qtextflag = false;
 		stream_stop();
@@ -3188,13 +3244,19 @@ std::expected<void, std::string> LoadGameLevelDungeon(bool firstflag, lvl_entry 
 
 void LoadGameLevelSyncPlayerEntry(lvl_entry lvldir)
 {
-	for (Player &player : Players) {
-		if (player.plractive && player.isOnActiveLevel() && (!player._pLvlChanging || &player == MyPlayer)) {
-			if (player._pHitPoints > 0) {
-				if (lvldir != ENTRY_LOAD)
-					SyncInitPlrPos(player);
-			} else {
-				dFlags[player.position.tile.x][player.position.tile.y] |= DungeonFlag::DeadPlayer;
+	// The players already on the level first, then the local player, so it never takes a square one of them stands on
+	// (in id order a lower id was placed before the others were on the map, and two clients then disagreed).
+	for (const bool local : { false, true }) {
+		for (Player &player : Players) {
+			if ((&player == MyPlayer) != local)
+				continue;
+			if (player.plractive && player.isOnActiveLevel() && (!player._pLvlChanging || &player == MyPlayer)) {
+				if (player._pHitPoints > 0) {
+					if (lvldir != ENTRY_LOAD)
+						SyncInitPlrPos(player, local && gbIsMultiplayer ? player.getId() : 0);
+				} else {
+					dFlags[player.position.tile.x][player.position.tile.y] |= DungeonFlag::DeadPlayer;
+				}
 			}
 		}
 	}

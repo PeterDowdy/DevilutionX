@@ -79,6 +79,7 @@
 #include "options.h"
 #include "player.h"
 #include "quests.h"
+#include "score/score.h"
 #include "sound_effect_enums.h"
 #include "storm/storm_net.hpp"
 #include "tables/itemdat.h"
@@ -913,6 +914,13 @@ void DiabloDeath(Monster &diablo, bool sendmsg)
 	quest._qactive = QUEST_DONE;
 	if (sendmsg)
 		NetSendCmdQuest(true, quest);
+	if (DiabloDeathKeepsPlayersInGame()) {
+		// Nobody is kicked out: no frozen world, no camera pan, no ending. Heroes on the level still get the kill.
+		Player &myPlayer = *MyPlayer;
+		if (myPlayer.isOnLevel(16))
+			myPlayer.pDiabloKillLevel = std::max(myPlayer.pDiabloKillLevel, static_cast<uint8_t>(sgGameInitInfo.nDifficulty + 1));
+		return;
+	}
 	sgbSaveSoundOn = gbSoundOn;
 	gbProcessPlayers = false;
 	for (size_t i = 0; i < ActiveMonsterCount; i++) {
@@ -1041,6 +1049,13 @@ void MonsterHitMonster(Monster &attacker, Monster &target, int dam)
 
 void StartDeathFromMonster(Monster &attacker, Monster &target)
 {
+	if (ScoringActive()) {
+		// A golem's kill is its owner's (claimed by the owner's client); a berserked monster's kill is nobody's.
+		if (!attacker.isPlayerMinion())
+			ScoreOnMonsterDeath(target, 0xFF);
+		else if (static_cast<size_t>(attacker.goalVar3) == MyPlayerId)
+			ScoreOnMonsterDeath(target, MyPlayerId);
+	}
 	const Direction md = GetDirection(target.position.tile, attacker.position.tile);
 	MonsterDeath(target, md, true);
 
@@ -1532,7 +1547,7 @@ void ShrinkLeaderPacksize(const Monster &monster)
 void MonsterDeath(Monster &monster)
 {
 	monster.var1++;
-	if (monster.type().type == MT_DIABLO) {
+	if (monster.type().type == MT_DIABLO && !DiabloDeathKeepsPlayersInGame()) {
 		if (monster.position.tile.x < ViewPosition.x) {
 			ViewPosition.x--;
 		} else if (monster.position.tile.x > ViewPosition.x) {
@@ -3633,6 +3648,7 @@ std::expected<void, std::string> InitMonsterGFX(CMonster &monsterType, MonsterSp
 	const MonsterData &monsterData = MonstersData[mtype];
 	if (spritesData.data == nullptr)
 		spritesData = LoadMonsterSpritesData(monsterData);
+	if (monsterType.animData != nullptr) hd::ForgetSprites(monsterType.animData.get());
 	monsterType.animData = std::move(spritesData.data);
 
 	const size_t numAnims = GetNumAnims(monsterData);
@@ -3649,7 +3665,7 @@ std::expected<void, std::string> InitMonsterGFX(CMonster &monsterType, MonsterSp
 		if (hd::Enabled()) { // the files were read together, so the loader couldn't say which file each sprite is
 			char path[64];
 			*BufCopy(path, "monsters\\", monsterData.spritePath(), std::string_view(&Animletter[i], 1)) = '\0';
-			hd::RegisterSprites(path, *monsterType.anims[i].sprites);
+			hd::RegisterSprites(path, *monsterType.anims[i].sprites, monsterType.animData.get());
 		}
 		++j;
 	}
@@ -4123,6 +4139,8 @@ void MonsterDeath(Monster &monster, Direction md, bool sendmsg)
 
 void StartMonsterDeath(Monster &monster, const Player &player, bool sendmsg)
 {
+	if (sendmsg && &player == MyPlayer && ScoringActive())
+		ScoreOnMonsterDeath(monster, MyPlayerId);
 	monster.tag(player);
 	const Direction md = GetDirection(monster.position.tile, player.position.tile);
 	MonsterDeath(monster, md, sendmsg);
@@ -4207,6 +4225,11 @@ void DoEnding()
 
 	sound_get_or_set_music_volume(musicVolume);
 	gbMusicOn = bMusicOn;
+}
+
+bool DiabloDeathKeepsPlayersInGame()
+{
+	return gbIsMultiplayer && ScoringActive();
 }
 
 void PrepDoEnding()
@@ -4430,6 +4453,7 @@ void ProcessMonsters()
 void FreeMonsters()
 {
 	for (CMonster &monsterType : LevelMonsterTypes) {
+		if (monsterType.animData != nullptr) hd::ForgetSprites(monsterType.animData.get());
 		monsterType.animData = nullptr;
 		monsterType.corpseId = 0;
 		for (AnimStruct &animData : monsterType.anims) {
@@ -5059,9 +5083,11 @@ bool Monster::isPossibleToHit() const
 	    && (!IsAnyOf(type().type, MT_COUNSLR, MT_MAGISTR, MT_CABALIST, MT_ADVOCATE) || goal == MonsterGoal::Normal);
 }
 
+static_assert(MAX_PLRS <= 8, "Monster::whoHit is an 8-bit mask of player ids");
+
 void Monster::tag(const Player &tagger)
 {
-	whoHit |= 1 << tagger.getId();
+	whoHit |= static_cast<uint8_t>(1U << tagger.getId());
 }
 
 bool Monster::tryLiftGargoyle()

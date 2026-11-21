@@ -10,6 +10,7 @@
 #include "engine/load_cel.hpp"
 #include "engine/load_clx.hpp"
 #include "engine/palette.h"
+#include "engine/player_colors.hpp"
 #include "engine/rectangle.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/render/primitive_render.hpp"
@@ -197,7 +198,8 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 
 		// Get the players remaining life
 		// If the player is using mana shield change the color
-		const int lifeTicks = ((player._pHitPoints * PortraitFrameSize.width) + (player._pMaxHP / 2)) / player._pMaxHP;
+		// A player who just joined can be drawn before its first packet header carried its maximum life (0 here)
+		const int lifeTicks = player._pMaxHP > 0 ? ((player._pHitPoints * PortraitFrameSize.width) + (player._pMaxHP / 2)) / player._pMaxHP : 0;
 		const uint8_t hpBarColor = (player.pManaShield) ? PAL8_YELLOW + 5 : PAL8_RED + 4;
 		// Now draw the characters remaining life
 		DrawBar(gameScreen, { pos, { lifeTicks, HealthBarHeight } }, hpBarColor);
@@ -234,13 +236,15 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 		    playerPortraitSprite,
 		    portraitPos);
 
-		if ((player.getId() + 1U) < (*PlayerTags).numSprites()) {
-			// Draw the player tag
-			const int tagWidth = (*PlayerTags)[player.getId() + 1].width();
-			RenderClxSprite(
-			    frameSubregion,
-			    (*PlayerTags)[player.getId() + 1],
-			    { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 });
+		if (PlayerTagFrame(player.getId()) < (*PlayerTags).numSprites()) {
+			// Draw the player tag (players 5-8: player 1's tag in their own colour)
+			const ClxSprite tag = (*PlayerTags)[PlayerTagFrame(player.getId())];
+			const int tagWidth = tag.width();
+			const Point tagPosition { PortraitFrameSize.width - (tagWidth + (tagWidth / 2)), 0 };
+			if (const uint8_t *trn = PlayerTagTranslation(player.getId()); trn != nullptr)
+				RenderClxSpriteWithTRN(frameSubregion, tag, tagPosition, trn);
+			else
+				RenderClxSprite(frameSubregion, tag, tagPosition);
 		}
 
 		// Check to see if the player is dead and if so we draw a half transparent red rect over the portrait
@@ -257,7 +261,7 @@ void DrawPartyMemberInfoPanel(const Surface &out)
 		pos.y += PortraitFrameSize.height;
 
 		// Get the players remaining mana
-		const int manaTicks = ((player._pMana * PortraitFrameSize.width) + (player._pMaxMana / 2)) / player._pMaxMana;
+		const int manaTicks = player._pMaxMana > 0 ? ((player._pMana * PortraitFrameSize.width) + (player._pMaxMana / 2)) / player._pMaxMana : 0;
 		const uint8_t manaBarColor = PAL8_BLUE + 3;
 		// Now draw the characters remaining mana
 		DrawBar(gameScreen, { pos, { manaTicks, ManaBarHeight } }, manaBarColor);

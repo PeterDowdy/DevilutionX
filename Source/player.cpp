@@ -49,6 +49,7 @@
 #include "player.h"
 #include "qol/autopickup.h"
 #include "qol/stash.h"
+#include "score/score.h"
 #include "spells.h"
 #include "stores.h"
 #include "towners.h"
@@ -308,6 +309,9 @@ void DeadItem(Player &player, Item &&item, Displacement direction)
 {
 	if (item.isEmpty())
 		return;
+
+	if (&player == MyPlayer && ScoringActive())
+		ScoreOnPlayerDrop(item); // a dead player's drops are second-hand
 
 	const Point playerTile = player.position.tile;
 	if (direction != Displacement { 0, 0 }) {
@@ -2493,18 +2497,18 @@ void Player::_addExperience(uint32_t experience, int levelDelta)
 	NetSendCmdParam1(false, CMD_PLRLEVEL, getCharacterLevel());
 }
 
-void AddPlrMonstExper(int lvl, unsigned exp, char pmask)
+void AddPlrMonstExper(int lvl, unsigned exp, uint8_t pmask)
 {
 	unsigned totplrs = 0;
 	for (size_t i = 0; i < Players.size(); i++) {
-		if (((1 << i) & pmask) != 0) {
+		if (((1U << i) & pmask) != 0) {
 			totplrs++;
 		}
 	}
 
 	if (totplrs != 0) {
 		const unsigned e = exp / totplrs;
-		if ((pmask & (1 << MyPlayerId)) != 0)
+		if ((pmask & (1U << MyPlayerId)) != 0)
 			MyPlayer->addExperience(e, lvl);
 	}
 }
@@ -2716,6 +2720,8 @@ StartPlayerKill(Player &player, DeathReason deathReason)
 	}
 
 	if (&player == MyPlayer) {
+		if (ScoringActive())
+			ScoreOnLocalPlayerDeath(deathReason);
 		NetSendCmdParam1(true, CMD_PLRDEAD, static_cast<uint16_t>(deathReason));
 		gamemenu_off();
 	}
@@ -3267,13 +3273,21 @@ void SyncPlrAnim(Player &player)
 
 void SyncInitPlrPos(Player &player)
 {
+	SyncInitPlrPos(player, 0);
+}
+
+void SyncInitPlrPos(Player &player, size_t preferredOffset)
+{
 	if (!player.isOnActiveLevel())
 		return;
 
 	const WorldTileDisplacement offset[9] = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 }, { 2, 0 }, { 0, 2 }, { 1, 2 }, { 2, 1 }, { 2, 2 } };
+	// The first eight offsets, as in the original, starting from the preferred one.
+	constexpr size_t OffsetsTried = 8;
 
 	const Point position = [&]() {
-		for (int i = 0; i < 8; i++) {
+		for (size_t n = 0; n < OffsetsTried; n++) {
+			const size_t i = (preferredOffset + n) % OffsetsTried;
 			Point position = player.position.tile + offset[i];
 			if (PosOkPlayer(player, position))
 				return position;

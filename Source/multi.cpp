@@ -38,6 +38,7 @@
 #include "players/validation.hpp"
 #include "plrmsg.h"
 #include "qol/chatlog.h"
+#include "score/score.h"
 #include "storm/storm_net.hpp"
 #include "sync.h"
 #include "tmsg.h"
@@ -179,6 +180,8 @@ void NetReceivePlayerData(TPkt *pkt)
 	pkt->hdr.pdir = static_cast<uint8_t>(myPlayer._pdir);
 }
 
+void SendPlayerInfo(uint8_t pnum, _cmd_id cmd);
+
 void CheckPlayerInfoTimeouts()
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
@@ -204,7 +207,9 @@ void CheckPlayerInfoTimeouts()
 		// Time the player out after 15 seconds
 		// if we do not receive valid player info
 		if (SDL_GetTicks() - timerStart >= 15000) {
-			SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP);
+			// A client that may not drop players (client-server, not the host) asks the player for its info again.
+			if (!SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP))
+				SendPlayerInfo(i, CMD_SEND_PLRINFO);
 			timerStart = 0;
 		}
 	}
@@ -269,6 +274,8 @@ void PlayerLeftMsg(Player &player, bool left)
 	if (!player.plractive)
 		return;
 
+	if (left && ScoringActive())
+		ScoreOnPlayerLeft(player);
 	FixPlrWalkTags(player);
 	RemovePortalMissile(player);
 	DeactivatePortal(player);
@@ -612,6 +619,7 @@ void InitGameInfo()
 	sgGameInitInfo.bCowQuest = *options.Gameplay.cowQuest ? 1 : 0;
 	sgGameInitInfo.bFriendlyFire = *options.Gameplay.friendlyFire ? 1 : 0;
 	sgGameInitInfo.fullQuests = (!gbIsMultiplayer || *options.Gameplay.multiplayerFullQuests) ? 1 : 0;
+	ScoreInitGameInfo(sgGameInitInfo);
 }
 
 void NetSendLoPri(uint8_t playerId, const std::byte *data, size_t size)
@@ -818,6 +826,7 @@ void NetClose()
 	tmsg_cleanup();
 	UnregisterNetEventHandlers();
 	SNetLeaveGame(leaveinfo_t::LEAVE_EXIT);
+	ScoreOnGameEnd();
 	if (gbIsMultiplayer)
 		SDL_Delay(2000);
 	if (!demo::IsRunning()) {
@@ -901,6 +910,9 @@ bool NetInit(bool bSinglePlayer)
 		    FormatGameSeed(sgGameInitInfo.gameSeed));
 	}
 
+	// The creator never waited for level data (no turn bit); it starts the score table.
+	ScoreOnGameStart(!sgbPlayerTurnBitTbl[MyPlayerId]);
+
 	return true;
 }
 
@@ -946,6 +958,8 @@ void recv_plrinfo(Player &player, const TCmdPlrInfoHdr &header, bool recv)
 	ResetPlayerGFX(player);
 	player.plractive = true;
 	gbActivePlayers++;
+	if (ScoringActive())
+		ScoreOnPlayerActive(player);
 
 	std::string_view szEvent;
 	if (sgbPlayerTurnBitTbl[pnum]) {

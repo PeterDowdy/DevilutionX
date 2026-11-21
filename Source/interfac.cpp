@@ -39,6 +39,7 @@
 #include "multi.h"
 #include "pfile.h"
 #include "plrmsg.h"
+#include "score/score.h"
 #include "utils/log.hpp"
 #include "utils/sdl_compat.h"
 #include "utils/sdl_geometry.h"
@@ -555,7 +556,7 @@ void ProgressEventHandler(const SDL_Event &event, uint16_t modState)
 		NetSendCmdLocParam2(true, CMD_PLAYER_JOINLEVEL, myPlayer.position.tile, myPlayer.plrlevel, myPlayer.plrIsOnSetLevel ? 1 : 0);
 		DelayPlrMessages(SDL_GetTicks() - ProgressEventHandlerState.loadStartedAt);
 
-		if (gbSomebodyWonGameKludge && myPlayer.isOnLevel(16)) {
+		if (gbSomebodyWonGameKludge && myPlayer.isOnLevel(16) && !DiabloDeathKeepsPlayersInGame()) {
 			PrepDoEnding();
 		}
 

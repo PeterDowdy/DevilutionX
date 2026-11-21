@@ -35,6 +35,24 @@
 
 namespace devilution {
 
+/**
+ * Called with the data of an owned CLX list or sheet just before the data is freed, while it is still valid; null when nothing listens. The
+ * HD layer (hd::Init) forgets the sprites it registered in that data, and lets go of their HD art.
+ */
+inline void (*ClxFreeHook)(const uint8_t *data) = nullptr;
+
+/** Frees the data of an owned CLX list or sheet, telling ClxFreeHook first. */
+struct ClxDataDeleter {
+	void operator()(uint8_t *data) const
+	{
+		if (ClxFreeHook != nullptr) ClxFreeHook(data);
+		delete[] data;
+	}
+};
+
+/** The data an owned CLX list or sheet holds. */
+using ClxOwnedData = std::unique_ptr<uint8_t[], ClxDataDeleter>;
+
 class OptionalClxSprite;
 
 /**
@@ -335,7 +353,7 @@ class OwnedClxSpriteListOrSheet;
 class OwnedClxSpriteList {
 public:
 	explicit OwnedClxSpriteList(std::unique_ptr<uint8_t[]> &&data)
-	    : data_(std::move(data))
+	    : data_(data.release())
 	{
 		assert(data_ != nullptr);
 	}
@@ -367,7 +385,13 @@ private:
 	// For OptionalOwnedClxSpriteList.
 	OwnedClxSpriteList() = default;
 
-	std::unique_ptr<uint8_t[]> data_;
+	explicit OwnedClxSpriteList(ClxOwnedData &&data)
+	    : data_(std::move(data))
+	{
+		assert(data_ != nullptr);
+	}
+
+	ClxOwnedData data_;
 
 	friend class ClxSpriteList; // for implicit conversion
 	friend class OptionalOwnedClxSpriteList;
@@ -393,7 +417,7 @@ inline OwnedClxSpriteList ClxSpriteList::clone() const
 class OwnedClxSpriteSheet {
 public:
 	OwnedClxSpriteSheet(std::unique_ptr<uint8_t[]> &&data, uint16_t numLists)
-	    : data_(std::move(data))
+	    : data_(data.release())
 	    , num_lists_(numLists)
 	{
 		assert(data_ != nullptr);
@@ -427,7 +451,15 @@ private:
 	// For OptionalOwnedClxSpriteList.
 	OwnedClxSpriteSheet() = default;
 
-	std::unique_ptr<uint8_t[]> data_;
+	OwnedClxSpriteSheet(ClxOwnedData &&data, uint16_t numLists)
+	    : data_(std::move(data))
+	    , num_lists_(numLists)
+	{
+		assert(data_ != nullptr);
+		assert(numLists > 0);
+	}
+
+	ClxOwnedData data_;
 	uint16_t num_lists_ = 0;
 
 	friend class ClxSpriteSheet; // for implicit conversion.
@@ -515,7 +547,7 @@ public:
 	}
 
 	explicit OwnedClxSpriteListOrSheet(std::unique_ptr<uint8_t[]> &&data, uint16_t numLists)
-	    : data_(std::move(data))
+	    : data_(data.release())
 	    , num_lists_(numLists)
 	{
 	}
@@ -572,7 +604,7 @@ private:
 	// For OptionalOwnedClxSpriteListOrSheet.
 	OwnedClxSpriteListOrSheet() = default;
 
-	std::unique_ptr<uint8_t[]> data_;
+	ClxOwnedData data_;
 	uint16_t num_lists_ = 0;
 
 	friend class ClxSpriteListOrSheet;

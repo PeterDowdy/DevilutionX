@@ -710,6 +710,13 @@ target_link_dependencies(libdevilutionx_multiplayer
   libdevilutionx_game_mode
 )
 
+if(DEVILUTIONX_SCORING)
+  # Pure rules of the multiplayer scoring (unit-tested on their own); the game side is score/score.cpp.
+  add_devilutionx_object_library(libdevilutionx_score_rules
+    score/score_rules.cpp
+  )
+endif()
+
 add_devilutionx_object_library(libdevilutionx_options
   options.cpp
 )
@@ -726,6 +733,9 @@ target_link_dependencies(libdevilutionx_options PUBLIC
   libdevilutionx_strings
   libdevilutionx_ini
 )
+if(DEVILUTIONX_SCORING)
+  target_link_dependencies(libdevilutionx_options PUBLIC libdevilutionx_score_rules)
+endif()
 
 add_devilutionx_object_library(libdevilutionx_pathfinding
   engine/path.cpp
@@ -1004,6 +1014,12 @@ endif()
 
 if(NOT DISABLE_DEMOMODE)
   list(APPEND libdevilutionx_SRCS engine/demomode.cpp)
+endif()
+
+if(DEVILUTIONX_SCORING)
+  list(APPEND libdevilutionx_SRCS
+    score/score.cpp
+    score/score_board.cpp)
 endif()
 
 if(NOT NONET)

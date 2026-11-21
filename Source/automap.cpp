@@ -11,6 +11,7 @@
 #include "control/control.hpp"
 #include "engine/load_file.hpp"
 #include "engine/palette.h"
+#include "engine/player_colors.hpp"
 #include "engine/render/automap_render.hpp"
 #include "engine/render/primitive_render.hpp"
 #include "levels/gendung.h"
@@ -1322,14 +1323,8 @@ void SearchAutomapItem(const Surface &out, const Displacement &myPlayerOffset, i
 
 uint8_t GetPlayerMapColor(int id)
 {
-	static constexpr uint8_t PlayerMapColors[] = {
-		MapColorsPlayer1,
-		MapColorsPlayer2,
-		MapColorsPlayer3,
-		MapColorsPlayer4,
-	};
-
-	if (id < 0 || id >= static_cast<int>(SDL_arraysize(PlayerMapColors)))
+	static_assert(PlayerMapColors[0] == MapColorsPlayer1 && PlayerMapColors[3] == MapColorsPlayer4);
+	if (id < 0 || id >= static_cast<int>(PlayerMapColors.size()))
 		return MapColorsPlayer1;
 
 	return PlayerMapColors[id];

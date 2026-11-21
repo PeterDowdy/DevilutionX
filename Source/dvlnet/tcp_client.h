@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
 
@@ -33,6 +34,11 @@ public:
 
 protected:
 	bool IsGameHost() override;
+	/** Client-server: only the host drops other players (its drop also closes their connection). */
+	bool MayDropOthers() override;
+	/** Obeys a drop from the server, from the host (player 0: the creator's own connection is the server's first) or
+	 *  from the player itself (leaving), never another client's: one stalled client must not drop everybody. */
+	bool AcceptsDisconnect(plr_t source, plr_t target) override;
 
 private:
 	frame_queue recv_queue;
@@ -45,8 +51,15 @@ private:
 
 	std::optional<PacketError> ioHandlerResult;
 
+	/**
+	 * Frames waiting to be written, the front one being written. asio allows one async_write at a time per socket:
+	 * a second one started while the first is only partly written interleaves their bytes.
+	 */
+	std::deque<std::unique_ptr<buffer_t>> sendQueue;
+
 	void HandleReceive(const asio::error_code &error, size_t bytesRead);
 	void StartReceive();
+	void StartWrite();
 	void HandleSend(const asio::error_code &error, size_t bytesSent);
 	void HandleTcpErrorCode();
 

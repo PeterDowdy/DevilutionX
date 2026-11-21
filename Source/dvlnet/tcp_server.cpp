@@ -125,11 +125,14 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 	if (newplr == PLR_BROADCAST)
 		return std::unexpected(ServerError());
 
+	std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
+	if (!pktInfo.has_value())
+		return std::unexpected(pktInfo.error());
 	if (Empty()) {
-		std::expected<const buffer_t *, PacketError> pktInfo = inPkt.Info();
-		if (!pktInfo.has_value())
-			return std::unexpected(pktInfo.error());
 		game_init_info = **pktInfo;
+	} else if (**pktInfo != ProtocolJoinTag()) {
+		// A build with another protocol (a stock client sends nothing here): refused before it gets a player slot.
+		return std::unexpected(PacketError("join refused: the joiner runs another multiplayer protocol"));
 	}
 
 	for (plr_t player = 0; player < Players.size(); player++) {
@@ -146,7 +149,12 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 	std::expected<void, PacketError> result
 	    = inPkt.Cookie()
-	          .and_then([&](cookie_t &&cookie) { return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, game_init_info); })
+	          .and_then([&](cookie_t &&cookie) {
+		          buffer_t info = game_init_info;
+		          const buffer_t tag = ProtocolJoinTag();
+		          info.insert(info.end(), tag.begin(), tag.end());
+		          return pktfty.make_packet<PT_JOIN_ACCEPT>(PLR_MASTER, PLR_BROADCAST, cookie, newplr, info);
+	          })
 	          .and_then([&](std::unique_ptr<packet> &&pkt) { return StartSend(con, *pkt); });
 	if (!result.has_value())
 		return result;
@@ -158,6 +166,14 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 std::expected<void, PacketError> tcp_server::HandleReceivePacket(packet &pkt)
 {
+	if (pkt.Type() == PT_DISCONNECT) {
+		// Only the host or the player itself may drop a player; another client's drop is not passed on.
+		std::expected<plr_t, PacketError> target = pkt.NewPlayer();
+		if (!target.has_value())
+			return std::unexpected(target.error());
+		if (*target != pkt.Source() && pkt.Source() != HostPlayer)
+			return {};
+	}
 	return SendPacket(pkt);
 }
 
@@ -197,22 +213,36 @@ std::expected<void, PacketError> tcp_server::StartSend(const scc &con, buffer_t 
 	std::expected<buffer_t, PacketError> frame = frame_queue::MakeFrame(pktData, flags);
 	if (!frame.has_value())
 		return std::unexpected(frame.error());
-	std::unique_ptr<buffer_t> framePtr = std::make_unique<buffer_t>(*frame);
-	const asio::mutable_buffer buf = asio::buffer(*framePtr);
+	// One write in flight per socket: a second async_write started while the first is only partly written (the
+	// client is not reading, e.g. while it loads a level) interleaves the two frames and corrupts the stream.
+	con->sendQueue.push_back(*std::move(frame));
+	if (con->sendQueue.size() == 1)
+		StartWrite(con);
+	return {};
+}
+
+void tcp_server::StartWrite(const scc &con)
+{
+	const asio::mutable_buffer buf = asio::buffer(con->sendQueue.front());
 	asio::async_write(con->socket, buf,
-	    [this, con, frame = std::move(framePtr)](const asio::error_code &ec, size_t bytesSent) {
+	    [this, con](const asio::error_code &ec, size_t bytesSent) {
 		    HandleSend(con, ec, bytesSent);
 	    });
-	return {};
 }
 
 void tcp_server::HandleSend(const scc &con, const asio::error_code &ec,
     size_t /*bytesSent*/)
 {
 	if (ec) {
+		con->sendQueue.clear();
 		Log("Network error: {}", ec.message());
 		DropConnection(con);
+		return;
 	}
+	if (!con->sendQueue.empty())
+		con->sendQueue.pop_front();
+	if (!con->sendQueue.empty())
+		StartWrite(con);
 }
 
 void tcp_server::StartAccept()

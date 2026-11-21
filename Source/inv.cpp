@@ -39,6 +39,7 @@
 #include "player.h"
 #include "plrmsg.h"
 #include "qol/stash.h"
+#include "score/score.h"
 #include "qol/visual_store.h"
 #include "stores.h"
 #include "towners.h"
@@ -1680,6 +1681,14 @@ void InvGetItem(Player &player, int ii)
 	CheckQuestItem(player, item);
 	item.updateRequiredStatsCacheForPlayer(player);
 
+	if (&player == MyPlayer && ScoringActive()) {
+		// The whole pile or item leaves the floor (into the inventory or the hand).
+		if (item._itype == ItemType::Gold)
+			ScoreOnGoldPickedUp(item, static_cast<uint32_t>(item._ivalue));
+		else
+			ScoreOnItemPickedUp(item);
+	}
+
 	if (item._itype == ItemType::Gold && GoldAutoPlace(player, item)) {
 		if (MyPlayer == &player) {
 			// Non-gold items (or gold when you have a full inventory) go to the hand then provide audible feedback on
@@ -1755,7 +1764,10 @@ void AutoGetItem(Player &player, Item *itemPointer, int ii)
 	bool autoEquipped = false;
 
 	if (item._itype == ItemType::Gold) {
+		const int pileValue = item._ivalue;
 		done = GoldAutoPlace(player, item);
+		if (&player == MyPlayer && ScoringActive())
+			ScoreOnGoldPickedUp(item, static_cast<uint32_t>(pileValue - (done ? 0 : item._ivalue)));
 		if (!done) {
 			SetPlrHandGoldCurs(item);
 		}
@@ -1774,6 +1786,8 @@ void AutoGetItem(Player &player, Item *itemPointer, int ii)
 	}
 
 	if (done) {
+		if (item._itype != ItemType::Gold && &player == MyPlayer && ScoringActive())
+			ScoreOnItemPickedUp(item);
 		if (!autoEquipped && *GetOptions().Audio.itemPickupSound && &player == MyPlayer) {
 			PlaySFX(SfxID::GrabItem);
 		}
@@ -1784,6 +1798,8 @@ void AutoGetItem(Player &player, Item *itemPointer, int ii)
 
 	if (&player == MyPlayer) {
 		player.Say(HeroSpeech::ICantCarryAnymore);
+		if (ScoringActive())
+			ScoreOnPlayerDrop(item); // put back by the player: second-hand
 	}
 	RespawnItem(item, true);
 	NetSendCmdPItem(true, CMD_SPAWNITEM, item.position, item);
@@ -2198,6 +2214,9 @@ bool UseInvItem(int cii)
 		player.Say(HeroSpeech::ThatWontWorkHere);
 		return true;
 	}
+
+	if (ScoringActive() && &player == MyPlayer)
+		ScoreOnPotionDrunk(item->_iMiscId, player._pHitPoints < player._pMaxHP || player._pMana < player._pMaxMana);
 
 	const int idata = ItemCAnimTbl[item->_iCurs];
 	if (item->_iMiscId == IMISC_BOOK)

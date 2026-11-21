@@ -23,7 +23,19 @@ using net::leaveinfo_t;
 struct Player;
 
 // must be unsigned to generate unsigned comparisons with pnum
-#define MAX_PLRS 4
+#define MAX_PLRS 8
+
+/**
+ * @brief The remaster's network protocol: the one value that decides which builds play together (0 would be stock
+ * DevilutionX, which has no such id). 1 = 8 players (MAX_PLRS 8, eight portals in the join delta, unsigned hit mask).
+ * Raise it whenever the wire format changes (new commands, delta layout, more players). It travels in the TCP join:
+ * a joiner sends it as the join request's info, the host refuses a joiner without the same id before giving it a
+ * player slot (a stock joiner sends an empty request), and the host appends it to the game info of the join accept,
+ * so a joiner refuses a host without it (a stock host). See dvlnet/base.cpp ProtocolJoinTag.
+ */
+// 2 = the 8-player netcode together with multiplayer scoring (CMD_SCORE_*): raised when the two branches were merged,
+// so a remaster build from before the merge is refused at the join.
+constexpr uint8_t RemasterProtocol = 2;
 
 /* @brief Contains info of running public game (for game list browsing) */
 struct GameInfo {

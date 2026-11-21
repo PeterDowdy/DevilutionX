@@ -24,6 +24,7 @@
 #include "options.h"
 #include "pfile.h"
 #include "qol/floatingnumbers.h"
+#include "score/score.h"
 #include "utils/language.h"
 
 #ifndef USE_SDL1
@@ -44,6 +45,7 @@ void GamemenuMusicVolume(bool bActivate);
 void GamemenuSoundVolume(bool bActivate);
 void GamemenuBrightness(bool bActivate);
 void GamemenuSpeed(bool bActivate);
+void GamemenuEndAndAnnounce(bool bActivate);
 
 /** Contains the game menu items of the single player menu. */
 TMenuItem sgSingleMenu[] = {
@@ -65,6 +67,17 @@ TMenuItem sgMultiMenu[] = {
 	{ GMENU_ENABLED, N_("Exit to Main Menu"), &GamemenuNewGame    },
 	{ GMENU_ENABLED, N_("Quit Game"),         &gamemenu_quit_game },
 	{ GMENU_ENABLED, nullptr,                 nullptr             },
+	// clang-format on
+};
+/** The multi player menu of the score keeper (the host) while a scored game is open. */
+TMenuItem sgMultiMenuScoring[] = {
+	// clang-format off
+	// dwFlags,      pszStr,                                fnMenu
+	{ GMENU_ENABLED, N_("Options"),                         &GamemenuOptions        },
+	{ GMENU_ENABLED, N_("Announce Scores"),                 &GamemenuEndAndAnnounce },
+	{ GMENU_ENABLED, N_("Exit to Main Menu"),               &GamemenuNewGame        },
+	{ GMENU_ENABLED, N_("Quit Game"),                       &gamemenu_quit_game     },
+	{ GMENU_ENABLED, nullptr,                               nullptr                 },
 	// clang-format on
 };
 TMenuItem sgOptionsMenu[] = {
@@ -101,6 +114,13 @@ void GamemenuUpdateSingle()
 void GamemenuPrevious(bool /*bActivate*/)
 {
 	gamemenu_on();
+}
+
+void GamemenuEndAndAnnounce(bool /*bActivate*/)
+{
+	gamemenu_off();
+	// Scores are final for everyone and the reveal opens; the game stays open (Peter).
+	ScoreEndGameByHost();
 }
 
 void GamemenuNewGame(bool /*bActivate*/)
@@ -368,6 +388,8 @@ void gamemenu_on()
 	isGameMenuOpen = true;
 	if (!gbIsMultiplayer) {
 		gmenu_set_items(sgSingleMenu, GamemenuUpdateSingle);
+	} else if (ScoreCanEndGame()) {
+		gmenu_set_items(sgMultiMenuScoring, nullptr);
 	} else {
 		gmenu_set_items(sgMultiMenu, nullptr);
 	}
