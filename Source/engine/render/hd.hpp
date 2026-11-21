@@ -99,7 +99,9 @@
  * the images only it held are let go, as soon as no pixel of the screen (or of a tracked off-screen buffer, or an effect layer) still shows
  * them; drawn again, they are loaded again, the same. Pillars belong to their tileset, an effect layer to the art it lights. As a safety net,
  * DEVILUTIONX_HD_MEMORY_MB (or "memory <MB>" in hd.txt) bounds what images that are still held but haven't been drawn for a while may take:
- * above it the longest unused are let go first (0: no bound). DEVILUTIONX_HD_UNLOAD=0 keeps every image once loaded (for comparisons);
+ * above it the longest unused are let go first (0: no bound). Images of 256 colours or fewer (the pack's pixel-filtered art) are kept as
+ * 8-bit indices into a palette of their own colours, a quarter of the memory; others in full colour. Either way every pixel draws exactly as
+ * it would from full colour. DEVILUTIONX_HD_UNLOAD=0 and DEVILUTIONX_HD_INDEXED=0 turn the two off (for comparisons);
  * DEVILUTIONX_HD_MEMLOG=<file> logs what the images take every 300 presents.
  */
 
@@ -233,10 +235,13 @@ struct MemoryUse {
 	size_t bytes = 0;      ///< the loaded images' pixels (and free-silhouette reach) now
 	size_t peak = 0;       ///< the most they took at once
 	uint32_t images = 0;   ///< images loaded now
+	uint32_t indexed = 0;  ///< of those, kept as 8-bit indices
 	uint32_t loads = 0;    ///< images loaded since the pack loaded (again after being let go included)
 	uint32_t unloads = 0;  ///< images let go since the pack loaded
 };
 MemoryUse Memory();
+/** The same for the pack image ``file`` alone ("sprite/<path>/<group>.<frame>.png"): all 0 when it isn't loaded. */
+MemoryUse Memory(std::string_view file);
 
 /** Whether the pixels of the pack image ``file`` ("sprite/<path>/<group>.<frame>.png") are loaded now. */
 bool Loaded(std::string_view file);

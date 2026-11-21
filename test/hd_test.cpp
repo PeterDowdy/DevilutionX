@@ -1578,5 +1578,80 @@ TEST(HdTest, TheBudgetLetsGoOfIdleArtThatIsLoadedAgainWhenDrawn)
 	EXPECT_TRUE(redrawn == drawn);
 }
 
+/**
+ * Draws art 16 pixels wide and ``rows`` high (at scale 4 over a 4 x 4 sprite: one art pixel per HD pixel across, rows sampled down to 16),
+ * every pixel opaque and of a colour of its own but the last, which is fully transparent with a colour of its own, through no palette (as
+ * it is). Returns the HD frame's 16 x 16 block, what it should show, and how the art was kept (``indexed``).
+ */
+void DrawManyColours(const std::string &name, int rows, std::vector<uint32_t> &shown, std::vector<uint32_t> &expected, bool &indexed)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::string file = "sprite/" + name + "/a/0.0.png";
+	std::vector<uint32_t> art(static_cast<size_t>(16) * rows);
+	for (size_t i = 0; i < art.size(); ++i)
+		art[i] = 0xFF000000U | static_cast<uint32_t>((i * 37) & 0xFF) << 16 | static_cast<uint32_t>(i & 0xFF) << 8 | static_cast<uint32_t>(i >> 8);
+	art.back() = 0x0012AB34U; // transparent: its colour is never seen
+	{
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 4\nimage " << file << " -\n";
+		fs::create_directories((pack / file).parent_path());
+		SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, 16, rows, 32, SDL_PIXELFORMAT_ARGB8888);
+		for (int y = 0; y < rows; ++y)
+			std::copy_n(&art[static_cast<size_t>(y) * 16], 16, reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(s->pixels) + static_cast<size_t>(y) * s->pitch));
+		IMG_SavePNG(s, (pack / file).string().c_str());
+		SDL_FreeSurface(s);
+	}
+	expected.clear();
+	for (int y = 0; y < 16; ++y)
+		for (int x = 0; x < 16; ++x) {
+			const uint32_t c = art[static_cast<size_t>(y * rows / 16) * 16 + x];
+			expected.push_back((c >> 24) == 0 ? 0xFFC83232U : c); // a transparent pixel shows the sprite's own colour
+		}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+	hd::Init();
+	const std::array<SDL_Color, 256> colors = Palette();
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+	hd::ForgetView(out);
+	const OwnedClxSpriteList sprite = Owned(Sprite());
+	hd::RegisterSpriteList(name + "\\A.CL2", 0, sprite);
+	ClxDraw(out, { 0, 3 }, sprite[0]);
+	hd::RequestDump("many");
+	hd::Present(nullptr, pal);
+	indexed = hd::Memory(file).indexed != 0;
+	const std::vector<uint32_t> frame = DumpedFrame(dump, "many"); // 32 x 32
+	shown.clear();
+	for (int y = 0; y < 16 && !frame.empty(); ++y)
+		shown.insert(shown.end(), &frame[static_cast<size_t>(y) * 32], &frame[static_cast<size_t>(y) * 32] + 16);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, ArtOf256ColoursIsKeptAs8BitAndDrawsExactly)
+{
+	std::vector<uint32_t> shown, expected;
+	bool indexed = false;
+	DrawManyColours("colours256", 16, shown, expected, indexed); // 255 opaque colours and a transparent one
+	EXPECT_TRUE(indexed);
+	EXPECT_TRUE(shown == expected);
+}
+
+TEST(HdTest, ArtOfMoreColoursIsKeptInFullColourAndDrawsExactly)
+{
+	std::vector<uint32_t> shown, expected;
+	bool indexed = true;
+	DrawManyColours("colours272", 17, shown, expected, indexed); // 271 opaque colours and a transparent one
+	EXPECT_FALSE(indexed);
+	EXPECT_TRUE(shown == expected);
+}
+
 } // namespace
 } // namespace devilution

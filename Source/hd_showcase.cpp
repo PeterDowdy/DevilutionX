@@ -286,8 +286,8 @@ void AfterGameTick()
 		const auto trim = [](std::string &s) { s.erase(0, s.find_first_not_of(" \t")); };
 		trim(rss);
 		trim(hwm);
-		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} loads {} unloads {} rss {} hwm {}", command.args.empty() ? "" : command.args[0], use.bytes, use.peak,
-		    use.images, use.loads, use.unloads, rss, hwm);
+		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} indexed {} loads {} unloads {} rss {} hwm {}", command.args.empty() ? "" : command.args[0], use.bytes,
+		    use.peak, use.images, use.indexed, use.loads, use.unloads, rss, hwm);
 	} else if (command.verb == "quit") {
 		diablo_quit(0);
 	} else {

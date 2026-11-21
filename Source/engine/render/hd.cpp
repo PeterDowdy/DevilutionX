@@ -54,7 +54,9 @@ struct HdImage {
 	int h = 0;
 	int loW = 0; ///< the original's size, which the HD art covers
 	int loH = 0;
-	std::vector<uint32_t> px;     ///< 0xAARRGGBB
+	std::vector<uint32_t> px;     ///< 0xAARRGGBB, for art of more than 256 colours (empty otherwise: see idx)
+	std::vector<uint8_t> idx;     ///< art of 256 colours or fewer: per pixel, where its colour is in ``colours`` (StorePixels; read with Pixel)
+	std::vector<uint32_t> colours; ///< 0xAARRGGBB
 	std::array<uint8_t, 768> ref; ///< the palette the art was authored against
 	bool hasRef = false;
 	uint32_t palette = 0; ///< which reference palette (PaletteKeys): pillars are graded by light level and palette
@@ -126,6 +128,7 @@ std::unordered_map<const void *, std::vector<const uint8_t *>> Owners; ///< Regi
 std::unordered_set<uint32_t> TileHeld;     ///< the pillars' images of the tileset in use, which it holds (SetTileset lets go of them)
 std::vector<uint32_t> PendingRelease;      ///< images nothing holds any more: Collect lets go of their pixels once nothing on screen shows them
 bool UnloadArt = true;                     ///< DEVILUTIONX_HD_UNLOAD=0: images are kept once loaded, as before
+bool IndexedArt = true;                    ///< DEVILUTIONX_HD_INDEXED=0: every image kept in full colour, as before
 size_t BudgetBytes = 0;                    ///< DEVILUTIONX_HD_MEMORY_MB / "memory <MB>": what held but idle images may take (0: no bound)
 constexpr size_t DefaultBudgetMb = 4096;
 constexpr uint32_t IdlePresents = 600;     ///< how long an image must go undrawn before the budget lets go of it
@@ -314,6 +317,76 @@ std::string NormalizePath(std::string_view path)
 	return out;
 }
 
+/** The art's pixel ``i`` (0xAARRGGBB), however it is kept. */
+uint32_t Pixel(const HdImage &img, size_t i)
+{
+	return img.idx.empty() ? img.px[i] : img.colours[img.idx[i]];
+}
+
+/**
+ * Keeps the pixels of the ARGB surface ``argb`` in ``img``: as 8-bit indices into a palette of the art's own colours when it has 256 or fewer (the
+ * pack's art is pixel-filtered to fewer), a quarter of the memory; else in full colour. Every colour is kept exactly, but a fully transparent pixel
+ * of a sprite's or a pillar's art is kept as 0: nothing ever shows its colour (SampleBlock blends it away entirely, ComputeReach reads alpha alone).
+ * An effect layer's are kept as they are (``keepClear``): its right half adds its colour whatever the alpha.
+ */
+void StorePixels(const SDL_Surface *argb, bool keepClear, HdImage &img)
+{
+	const auto w = static_cast<size_t>(img.w), h = static_cast<size_t>(img.h);
+	const auto rowOf = [argb](size_t y) { return reinterpret_cast<const uint32_t *>(static_cast<const uint8_t *>(argb->pixels) + y * argb->pitch); };
+	const auto fold = [keepClear](uint32_t c) { return keepClear || (c >> 24) != 0 ? c : 0U; };
+	img.px.clear();
+	img.idx.clear();
+	img.colours.clear();
+	if (IndexedArt) {
+		constexpr size_t Slots = 1024; // open addressing over the colours seen: 256 fill a quarter of it at most
+		std::array<uint32_t, Slots> keys;
+		std::array<int16_t, Slots> slots;
+		slots.fill(-1);
+		img.idx.resize(w * h);
+		bool fits = true;
+		uint32_t last = 0;
+		int16_t lastSlot = -1;
+		for (size_t y = 0; y < h && fits; ++y) {
+			const uint32_t *row = rowOf(y);
+			uint8_t *out = &img.idx[y * w];
+			for (size_t x = 0; x < w; ++x) {
+				const uint32_t c = fold(row[x]);
+				if (lastSlot >= 0 && c == last) {
+					out[x] = static_cast<uint8_t>(lastSlot);
+					continue;
+				}
+				size_t s = static_cast<uint32_t>(c * 2654435761U) >> 22;
+				while (slots[s] >= 0 && keys[s] != c)
+					s = (s + 1) & (Slots - 1);
+				if (slots[s] < 0) {
+					if (img.colours.size() == 256) {
+						fits = false;
+						break;
+					}
+					keys[s] = c;
+					slots[s] = static_cast<int16_t>(img.colours.size());
+					img.colours.push_back(c);
+				}
+				last = c;
+				lastSlot = slots[s];
+				out[x] = static_cast<uint8_t>(lastSlot);
+			}
+		}
+		if (fits) {
+			img.colours.shrink_to_fit();
+			return;
+		}
+		std::vector<uint8_t>().swap(img.idx);
+		std::vector<uint32_t>().swap(img.colours);
+	}
+	img.px.resize(w * h);
+	for (size_t y = 0; y < h; ++y) {
+		const uint32_t *row = rowOf(y);
+		for (size_t x = 0; x < w; ++x)
+			img.px[y * w + x] = fold(row[x]);
+	}
+}
+
 /** ``n`` more bytes of ``img`` loaded. */
 void AddBytes(HdImage &img, size_t n)
 {
@@ -345,9 +418,7 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 	if (argb == nullptr) return false;
 	img.w = argb->w;
 	img.h = argb->h;
-	img.px.resize(static_cast<size_t>(img.w) * img.h);
-	for (int y = 0; y < img.h; ++y)
-		std::memcpy(&img.px[static_cast<size_t>(y) * img.w], static_cast<uint8_t *>(argb->pixels) + static_cast<size_t>(y) * argb->pitch, img.w * 4);
+	StorePixels(argb, file.compare(0, 3, "fx/") == 0, img);
 	SDL_FreeSurface(argb);
 	if (!palette.empty()) {
 		std::ifstream pal(PackDir + "/" + palette, std::ios::binary);
@@ -355,7 +426,7 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 	}
 	img.reach.clear();
 	img.bytes = 0;
-	AddBytes(img, img.px.size() * sizeof(uint32_t));
+	AddBytes(img, img.px.size() * sizeof(uint32_t) + img.idx.size() + img.colours.size() * sizeof(uint32_t));
 	img.resident = true;
 	++LoadCount;
 	return true;
@@ -368,6 +439,8 @@ void Unload(HdImage &img)
 	ResidentBytes -= img.bytes;
 	img.bytes = 0;
 	std::vector<uint32_t>().swap(img.px);
+	std::vector<uint8_t>().swap(img.idx);
+	std::vector<uint32_t>().swap(img.colours);
 	std::vector<uint8_t>().swap(img.reach);
 	img.resident = false;
 	++UnloadCount;
@@ -702,7 +775,7 @@ void ComputeReach(HdImage &img)
 				const int v = std::min(img.h - 1, (ly * n + j) * img.h / (img.loH * n));
 				for (int i = 0; i < n; ++i) {
 					const int u = std::min(img.w - 1, (lx * n + i) * img.w / (img.loW * n));
-					best = std::max(best, img.px[static_cast<size_t>(v) * img.w + u] >> 24);
+					best = std::max(best, Pixel(img, static_cast<size_t>(v) * img.w + u) >> 24);
 				}
 			}
 			img.reach[static_cast<size_t>(ly) * img.loW + lx] = best >= 32 ? 1 : 0;
@@ -1328,12 +1401,16 @@ bool SampleBlock(const HdImage &img, const PixelProvenance &p, int x, int y, SDL
 	int us[8];
 	for (int i = 0; i < n; ++i)
 		us[i] = std::min(img.w - 1, (sx * n + i) * img.w / (img.loW * n));
+	const bool indexed = !img.idx.empty();
+	const uint32_t *colours = img.colours.data();
 	for (int j = 0; j < n; ++j) {
 		const int v = std::min(img.h - 1, (sy * n + j) * img.h / (img.loH * n));
-		const uint32_t *row = &img.px[static_cast<size_t>(v) * img.w];
+		const size_t rowAt = static_cast<size_t>(v) * img.w;
+		const uint32_t *row = indexed ? nullptr : &img.px[rowAt];
+		const uint8_t *indices = indexed ? &img.idx[rowAt] : nullptr;
 		uint32_t *out = dst + static_cast<size_t>(j) * outW;
 		for (int i = 0; i < n; ++i) {
-			const uint32_t s = row[us[i]];
+			const uint32_t s = indexed ? colours[indices[us[i]]] : row[us[i]];
 			const uint32_t a = s >> 24;
 			uint32_t r = (s >> 16) & 0xFF, g = (s >> 8) & 0xFF, b = s & 0xFF;
 			if (grade != nullptr) {
@@ -1448,11 +1525,11 @@ void ComposeOverlays(SDL_Surface *pal)
 					us[i] = std::min(half - 1, (sx * n + i) * half / (img.loW * n));
 				for (int j = 0; j < n; ++j) {
 					const int v = std::min(img.h - 1, (sy * n + j) * img.h / (img.loH * n));
-					const uint32_t *row = &img.px[static_cast<size_t>(v) * img.w];
+					const size_t rowAt = static_cast<size_t>(v) * img.w;
 					uint32_t *out = &Frame[(static_cast<size_t>(y) * n + j) * outW + static_cast<size_t>(x) * n];
 					for (int i = 0; i < n; ++i) {
-						const uint32_t over = row[us[i]];
-						const uint32_t glow = row[half + us[i]] & 0xFFFFFFU;
+						const uint32_t over = Pixel(img, rowAt + us[i]);
+						const uint32_t glow = Pixel(img, rowAt + half + us[i]) & 0xFFFFFFU;
 						const uint32_t a = over >> 24;
 						if (a == 0 && glow == 0) continue;
 						uint32_t c[3] = { (out[i] >> 16) & 0xFF, (out[i] >> 8) & 0xFF, out[i] & 0xFF };
@@ -1724,6 +1801,7 @@ void Init()
 	if (MinBright > 0)
 		LogInfo("HD: minimum brightness for monsters, {}", MinBright);
 	if (const char *unload = std::getenv("DEVILUTIONX_HD_UNLOAD"); unload != nullptr && *unload != '\0') UnloadArt = std::atoi(unload) != 0;
+	if (const char *indexed = std::getenv("DEVILUTIONX_HD_INDEXED"); indexed != nullptr && *indexed != '\0') IndexedArt = std::atoi(indexed) != 0;
 	if (const char *budget = std::getenv("DEVILUTIONX_HD_MEMORY_MB"); budget != nullptr && *budget != '\0') BudgetBytes = static_cast<size_t>(std::max(0.0, std::atof(budget)) * (1 << 20));
 	if (const char *log = std::getenv("DEVILUTIONX_HD_MEMLOG"); log != nullptr) MemLog = log;
 	Active = true;
@@ -1733,7 +1811,8 @@ void Init()
 		std::atexit([]() { ClxFreeHook = nullptr; }); // sprite data freed at exit may outlive the maps here
 	}
 	LogInfo("HD: pack {} ({} images, {}x{}{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
-	LogInfo("HD: images {}, idle art bounded at {} MB", UnloadArt ? "let go of when unused" : "kept once loaded", BudgetBytes >> 20);
+	LogInfo("HD: images {}, idle art bounded at {} MB, {}", UnloadArt ? "let go of when unused" : "kept once loaded", BudgetBytes >> 20,
+	    IndexedArt ? "8-bit where 256 colours do" : "all in full colour");
 }
 
 void RegisterSprites(std::string_view path, ClxSpriteListOrSheet sprites, const void *owner)
@@ -1796,8 +1875,23 @@ MemoryUse Memory()
 	use.peak = PeakBytes;
 	use.loads = LoadCount;
 	use.unloads = UnloadCount;
-	for (const HdImage &img : Images)
+	for (const HdImage &img : Images) {
 		use.images += img.resident ? 1 : 0;
+		use.indexed += img.resident && !img.idx.empty() ? 1 : 0;
+	}
+	return use;
+}
+
+MemoryUse Memory(std::string_view file)
+{
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	MemoryUse use;
+	const auto found = ImageIds.find(std::string(file));
+	if (found == ImageIds.end() || found->second == 0 || !Images[found->second].resident) return use;
+	const HdImage &img = Images[found->second];
+	use.bytes = img.bytes;
+	use.images = 1;
+	use.indexed = img.idx.empty() ? 0 : 1;
 	return use;
 }
 
@@ -2073,7 +2167,7 @@ bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)
 	if (!MemLog.empty() && PresentCount % 300 == 0) {
 		const MemoryUse use = Memory();
 		std::ofstream(MemLog, std::ios::app) << "present " << PresentCount << " bytes " << use.bytes << " peak " << use.peak << " images " << use.images
-		                                     << " loads " << use.loads << " unloads " << use.unloads << " composeMs " << ComposeMs << '\n';
+		                                     << " indexed " << use.indexed << " loads " << use.loads << " unloads " << use.unloads << " composeMs " << ComposeMs << '\n';
 	}
 	if (renderer == nullptr) return false;
 	const int w = palSurface->w * Scale;
