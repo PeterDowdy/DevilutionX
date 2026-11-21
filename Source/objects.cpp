@@ -39,6 +39,7 @@
 #include "monster.h"
 #include "options.h"
 #include "qol/stash.h"
+#include "score/score.h"
 #include "stores.h"
 #include "tables/objdat.h"
 #include "towners.h"
@@ -2747,6 +2748,8 @@ void OperateShrineGlimmering(Player &player)
 
 	for (Item &item : PlayerItemsRange { player }) {
 		if (item._iMagical != ITEM_QUALITY_NORMAL && !item._iIdentified) {
+			if (ScoringActive())
+				ScoreOnIdentified(item);
 			item._iIdentified = true;
 		}
 	}

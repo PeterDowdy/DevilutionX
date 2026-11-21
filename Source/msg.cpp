@@ -2348,6 +2348,9 @@ size_t OnPlayerJoinLevel(const TCmdLocParam2 &message, Player &player)
 		player.plractive = true;
 		gbActivePlayers++;
 		EventPlrMsg(FormatRuntime(_("Player '{:s}' (level {:d}) just joined the game"), player._pName, player.getCharacterLevel()));
+		// This is where the others see a joiner become active (recv_plrinfo covers the joiner seeing them).
+		if (ScoringActive())
+			ScoreOnPlayerActive(player);
 	}
 
 	if (player.plractive && &player != MyPlayer) {
@@ -3237,6 +3240,10 @@ void NetSendCmdGItem(bool bHiPri, _cmd_id bCmd, const Player &player, uint8_t ii
 void NetSendCmdPItem(bool bHiPri, _cmd_id bCmd, Point position, const Item &item)
 {
 	TCmdPItem cmd {};
+
+	// Scoring: an item a player puts down (from the hand, or swapped on pickup) is second-hand from now on.
+	if (IsAnyOf(bCmd, CMD_PUTITEM, CMD_SYNCPUTITEM) && ScoringActive())
+		ScoreOnPlayerDrop(item);
 
 	cmd.bCmd = bCmd;
 	cmd.x = position.x;

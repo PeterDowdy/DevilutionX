@@ -68,6 +68,7 @@
 #include "panels/info_box.hpp"
 #include "panels/ui_panels.hpp"
 #include "player.h"
+#include "score/score.h"
 #include "qol/stash.h"
 #include "quests.h"
 #include "sound_effect_enums.h"
@@ -3865,6 +3866,8 @@ void CheckIdentify(Player &player, int cii)
 	else
 		pi = &player.InvBody[cii];
 
+	if (!pi->_iIdentified && &player == MyPlayer && ScoringActive())
+		ScoreOnIdentified(*pi);
 	pi->_iIdentified = true;
 	CalcPlrInv(player, true);
 }

@@ -310,6 +310,9 @@ void DeadItem(Player &player, Item &&item, Displacement direction)
 	if (item.isEmpty())
 		return;
 
+	if (&player == MyPlayer && ScoringActive())
+		ScoreOnPlayerDrop(item); // a dead player's drops are second-hand
+
 	const Point playerTile = player.position.tile;
 	if (direction != Displacement { 0, 0 }) {
 		const Point target = playerTile + direction;

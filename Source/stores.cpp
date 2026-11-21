@@ -30,6 +30,7 @@
 #include "panels/info_box.hpp"
 #include "panels/quest_log.hpp"
 #include "qol/stash.h"
+#include "score/score.h"
 #include "qol/visual_store.h"
 #include "tables/townerdat.hpp"
 #include "towners.h"
@@ -1797,6 +1798,9 @@ void BoyBuyEnter()
 void StorytellerIdentifyItem(Item &item)
 {
 	Player &myPlayer = *MyPlayer;
+
+	if (!item._iIdentified && ScoringActive())
+		ScoreOnIdentified(item); // `item` is the store's copy of the player's item (same seed)
 
 	const int8_t idx = PlayerItemIndexes[((OldTextLine - PreviousScrollPos) / 4) + OldScrollPos];
 	if (idx < 0) {

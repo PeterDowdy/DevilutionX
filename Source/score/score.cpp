@@ -28,6 +28,8 @@
 #endif
 
 #include "engine/demomode.h"
+#include "items.h"
+#include "levels/gendung.h"
 #include "monster.h"
 #include "msg.h"
 #include "multi.h"
@@ -100,6 +102,8 @@ constexpr uint32_t GoldBatchMs = 1000;
 constexpr uint32_t TableRequestMs = 2000;
 /** Claims seen but not answered are kept this long, for a new keeper to pick up. */
 constexpr uint32_t PendingClaimMs = 30000;
+/** How many first-hand pickups a client remembers (for identify). */
+constexpr size_t MaxFreshPickups = 4000;
 
 /** One monster family: a sprite set, with Peter's three merges. */
 struct FamilyDef {
@@ -170,6 +174,8 @@ struct ScoreState {
 	uint32_t claimsSent = 0;
 	uint32_t rejected = 0;
 	uint32_t tablesReceived = 0;
+	/** First game tick without a table (joiner). */
+	uint32_t startedAt = 0;
 };
 
 ScoreState State;
@@ -561,9 +567,17 @@ void ScoreOnPlayerLeft(const Player &player)
 
 void ScoreTick()
 {
-	if (!ScoringActive() || !State.haveTable)
+	if (!ScoringActive())
 		return;
 	const uint32_t now = Now();
+	if (!State.haveTable) {
+		// A joiner gets the table from the keeper when it arrives on its first level; ask again if that got lost.
+		if (State.startedAt == 0)
+			State.startedAt = now;
+		else if (now - State.startedAt > 5000)
+			RequestTable();
+		return;
+	}
 	if (AmKeeper()) {
 		if (!State.wasKeeper) {
 			// Handover: a new epoch, the table to everyone, then the claims nobody answered.
@@ -641,6 +655,74 @@ void ScoreOnLocalPlayerDeath(DeathReason deathReason)
 	Claim claim;
 	claim.kind = ClaimKind::PlayerKill;
 	claim.subject = DamageSource;
+	SendClaim(claim);
+}
+
+bool IsSecondHand(uint32_t seed)
+{
+	if (!State.haveTable)
+		return std::find(State.earlyMarks.begin(), State.earlyMarks.end(), seed) != State.earlyMarks.end();
+	return score::SortedContains(State.table.secondHand, seed);
+}
+
+void ScoreOnGoldPickedUp(const Item &pile, uint32_t amount)
+{
+	// Gold no player has held before, each pile once: piles a player put down are second-hand.
+	if (!ScoringOpen() || amount == 0 || IsSecondHand(static_cast<uint32_t>(pile._iSeed)))
+		return;
+	State.goldPending += amount;
+}
+
+void ScoreOnItemPickedUp(const Item &item)
+{
+	if (!ScoringOpen() || IsSecondHand(static_cast<uint32_t>(item._iSeed)))
+		return;
+	score::SortedInsert(State.freshPickups, static_cast<uint32_t>(item._iSeed), MaxFreshPickups);
+}
+
+void ScoreOnPlayerDrop(const Item &item)
+{
+	if (!ScoringOpen() || item.isEmpty())
+		return;
+	Claim claim;
+	claim.kind = ClaimKind::SecondHand;
+	claim.value = static_cast<uint32_t>(item._iSeed);
+	SendClaim(claim);
+}
+
+void ScoreOnPotionDrunk(int miscId, bool lifeOrManaBelowMax)
+{
+	// Healing, mana and rejuvenation potions (small and full) drunk in the dungeon while not at full life or mana.
+	// Elixirs and arena potions are not potions here.
+	if (!ScoringOpen() || leveltype == DTYPE_TOWN || !lifeOrManaBelowMax)
+		return;
+	switch (static_cast<item_misc_id>(miscId)) {
+	case IMISC_HEAL:
+	case IMISC_FULLHEAL:
+	case IMISC_MANA:
+	case IMISC_FULLMANA:
+	case IMISC_REJUV:
+	case IMISC_FULLREJUV:
+		break;
+	default:
+		return;
+	}
+	Claim claim;
+	claim.kind = ClaimKind::Potion;
+	SendClaim(claim);
+}
+
+void ScoreOnIdentified(const Item &item)
+{
+	// Magic or unique items this player picked up first-hand in this game; the keeper counts each item once.
+	if (!ScoringOpen() || item._iMagical == ITEM_QUALITY_NORMAL || item._iIdentified)
+		return;
+	const auto seed = static_cast<uint32_t>(item._iSeed);
+	if (!score::SortedContains(State.freshPickups, seed))
+		return;
+	Claim claim;
+	claim.kind = ClaimKind::Identified;
+	claim.value = seed;
 	SendClaim(claim);
 }
 
