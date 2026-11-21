@@ -166,6 +166,14 @@ std::expected<void, PacketError> tcp_server::HandleReceiveNewPlayer(const scc &c
 
 std::expected<void, PacketError> tcp_server::HandleReceivePacket(packet &pkt)
 {
+	if (pkt.Type() == PT_DISCONNECT) {
+		// Only the host or the player itself may drop a player; another client's drop is not passed on.
+		std::expected<plr_t, PacketError> target = pkt.NewPlayer();
+		if (!target.has_value())
+			return std::unexpected(target.error());
+		if (*target != pkt.Source() && pkt.Source() != HostPlayer)
+			return {};
+	}
 	return SendPacket(pkt);
 }
 

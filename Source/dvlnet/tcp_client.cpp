@@ -132,6 +132,16 @@ bool tcp_client::IsGameHost()
 	return local_server != nullptr;
 }
 
+bool tcp_client::MayDropOthers()
+{
+	return IsGameHost();
+}
+
+bool tcp_client::AcceptsDisconnect(plr_t source, plr_t target)
+{
+	return source == PLR_MASTER || source == target || source == tcp_server::HostPlayer;
+}
+
 std::expected<void, PacketError> tcp_client::poll()
 {
 	while (ioc.poll_one() > 0) {

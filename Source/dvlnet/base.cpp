@@ -148,6 +148,10 @@ std::expected<void, PacketError> base::HandleDisconnect(packet &pkt)
 	std::expected<plr_t, PacketError> newPlayer = pkt.NewPlayer();
 	if (!newPlayer.has_value())
 		return std::unexpected(newPlayer.error());
+	if (!AcceptsDisconnect(pkt.Source(), *newPlayer)) {
+		LogVerbose("Ignoring player {} dropping player {}: only the host or the player itself can", pkt.Source(), *newPlayer);
+		return {};
+	}
 	if (*newPlayer == plr_self)
 		return std::unexpected("We were dropped by the owner?");
 	if (IsConnected(*newPlayer)) {
@@ -517,6 +521,10 @@ bool base::SNetLeaveGame(net::leaveinfo_t type)
 bool base::SNetDropPlayer(int playerid, net::leaveinfo_t flags)
 {
 	const auto plr = static_cast<plr_t>(playerid);
+	if (plr != plr_self && !MayDropOthers()) {
+		// Not ours to decide: the host drops a player that stopped (and closes its connection); until then wait.
+		return false;
+	}
 	std::expected<std::unique_ptr<packet>, PacketError> pkt
 	    = pktfty->make_packet<PT_DISCONNECT>(
 	        plr_self,

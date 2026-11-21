@@ -34,6 +34,11 @@ public:
 
 protected:
 	bool IsGameHost() override;
+	/** Client-server: only the host drops other players (its drop also closes their connection). */
+	bool MayDropOthers() override;
+	/** Obeys a drop from the server, from the host (player 0: the creator's own connection is the server's first) or
+	 *  from the player itself (leaving), never another client's: one stalled client must not drop everybody. */
+	bool AcceptsDisconnect(plr_t source, plr_t target) override;
 
 private:
 	frame_queue recv_queue;

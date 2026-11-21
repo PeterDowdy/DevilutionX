@@ -89,6 +89,21 @@ protected:
 	[[nodiscard]] bool IsConnected(plr_t player) const;
 	virtual bool IsGameHost() = 0;
 
+	/**
+	 * @brief Whether this client may drop other players for everyone (SNetDropPlayer). Peer-to-peer: every peer decides
+	 * for itself. A client-server game (TCP) overrides it: only the host may.
+	 */
+	virtual bool MayDropOthers()
+	{
+		return true;
+	}
+
+	/** @brief Whether a PT_DISCONNECT from `source` about `target` is obeyed (see MayDropOthers). */
+	virtual bool AcceptsDisconnect(plr_t /*source*/, plr_t /*target*/)
+	{
+		return true;
+	}
+
 private:
 	std::array<PlayerState, MAX_PLRS> playerStateTable_;
 	bool awaitingSequenceNumber_ = true;

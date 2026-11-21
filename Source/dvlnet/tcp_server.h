@@ -28,6 +28,9 @@ inline PacketError ServerError()
 
 class tcp_server {
 public:
+	/** The game creator's client: its own connection is the server's first, so it gets player id 0. */
+	static constexpr plr_t HostPlayer = 0;
+
 	tcp_server(asio::io_context &ioc, const std::string &bindaddr,
 	    unsigned short port, packet_factory &pktfty);
 	std::string LocalhostSelf();

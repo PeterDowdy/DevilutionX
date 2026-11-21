@@ -179,6 +179,8 @@ void NetReceivePlayerData(TPkt *pkt)
 	pkt->hdr.pdir = static_cast<uint8_t>(myPlayer._pdir);
 }
 
+void SendPlayerInfo(uint8_t pnum, _cmd_id cmd);
+
 void CheckPlayerInfoTimeouts()
 {
 	for (uint8_t i = 0; i < Players.size(); i++) {
@@ -204,7 +206,9 @@ void CheckPlayerInfoTimeouts()
 		// Time the player out after 15 seconds
 		// if we do not receive valid player info
 		if (SDL_GetTicks() - timerStart >= 15000) {
-			SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP);
+			// A client that may not drop players (client-server, not the host) asks the player for its info again.
+			if (!SNetDropPlayer(i, leaveinfo_t::LEAVE_DROP))
+				SendPlayerInfo(i, CMD_SEND_PLRINFO);
 			timerStart = 0;
 		}
 	}
