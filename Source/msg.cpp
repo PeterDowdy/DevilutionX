@@ -11,6 +11,7 @@
 #include <format>
 #include <list>
 #include <memory>
+#include <vector>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_timer.h>
@@ -299,6 +300,11 @@ ankerl::unordered_dense::map<uint8_t, LocalLevel> LocalLevels;
 DJunk sgJunk;
 uint8_t sgbDeltaChunks;
 std::list<TMegaPkt> MegaPktList;
+/**
+ * @brief Size of every record BufferMessage wrote into MegaPktList, in order, so that PrePacket can step over one
+ * message it must not run (its sender is not valid yet) instead of dropping everything buffered after it.
+ */
+std::vector<size_t> BufferedRecordSizes;
 Item ItemLimbo;
 
 /** @brief Last sent player command for the local player. */
@@ -422,16 +428,21 @@ void GetNextPacket()
 void FreePackets()
 {
 	MegaPktList.clear();
+	BufferedRecordSizes.clear();
 }
 
 void PrePacket()
 {
 	uint8_t playerId = std::numeric_limits<uint8_t>::max();
+	size_t record = 0;
+	size_t skipped = 0;
 	for (TMegaPkt &pkt : MegaPktList) {
 		std::byte *data = pkt.data;
 		size_t remainingBytes = sizeof(pkt.data) - pkt.spaceLeft;
 		while (remainingBytes > 0) {
 			auto cmdId = static_cast<_cmd_id>(*data);
+			const size_t recordSize = record < BufferedRecordSizes.size() ? BufferedRecordSizes[record] : 0;
+			record++;
 
 			if (cmdId == FAKE_CMD_SETID) {
 				auto *cmd = reinterpret_cast<TFakeCmdPlr *>(data);
@@ -456,8 +467,16 @@ void PrePacket()
 
 			if (IsNoneOf(cmdId, CMD_SEND_PLRINFO, CMD_ACK_PLRINFO)) {
 				if (!IsNetPlayerValid(playerId)) {
-					Log("Source of network message is no longer valid");
-					return;
+					// The sender's player info has not arrived (yet): skip this one message, as a live message from
+					// an unknown sender is skipped, and go on with the rest (other players' info among them).
+					if (recordSize == 0 || recordSize > remainingBytes) {
+						Log("Source of network message is no longer valid");
+						return;
+					}
+					skipped++;
+					data += recordSize;
+					remainingBytes -= recordSize;
+					continue;
 				}
 			}
 
@@ -470,6 +489,8 @@ void PrePacket()
 			remainingBytes -= size;
 		}
 	}
+	if (skipped > 0)
+		Log("Skipped {} buffered network messages from players whose info had not arrived", skipped);
 }
 
 void BufferMessage(const void *message, size_t messageSize)
@@ -480,6 +501,7 @@ void BufferMessage(const void *message, size_t messageSize)
 	TMegaPkt &currMegaPkt = MegaPktList.back();
 	memcpy(currMegaPkt.data + sizeof(currMegaPkt.data) - currMegaPkt.spaceLeft, message, messageSize);
 	currMegaPkt.spaceLeft -= messageSize;
+	BufferedRecordSizes.push_back(messageSize);
 }
 
 void BufferMessage(uint8_t pnum, const void *message, size_t messageSize)
