@@ -5,10 +5,12 @@
  */
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 #ifdef USE_SDL3
@@ -24,6 +26,7 @@
 
 #include "control/control.hpp"
 #include "controls/input.h"
+#include "diablo.h"
 #include "engine/clx_sprite.hpp"
 #include "engine/dx.h"
 #include "engine/events.hpp"
@@ -269,6 +272,7 @@ struct {
 	bool done;
 	uint32_t drawnProgress;
 	std::array<SDL_Color, 256> palette;
+	bool quitWhenLoaded; ///< the window was closed during the loading screen: quit once the level is loaded (ShowProgress)
 } ProgressEventHandlerState;
 
 void InitRendering()
@@ -479,7 +483,7 @@ void DoLoad(interface_mode uMsg)
 	}
 
 	if (!loadResult.has_value()) {
-		SDL_Event event;
+		SDL_Event event {}; // (user.data2: no title, see WM_ERROR)
 		CustomEventToSdlEvent(event, WM_ERROR);
 		event.user.data1 = new std::string(std::move(loadResult).error());
 		if (!SDLC_PushEvent(&event)) {
@@ -503,8 +507,26 @@ void DoLoad(interface_mode uMsg)
 #endif
 }
 
+bool IsWindowCloseRequest(const SDL_Event &event)
+{
+#ifdef USE_SDL3
+	return event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+#elif !defined(USE_SDL1)
+	return event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE;
+#else
+	return false;
+#endif
+}
+
 void ProgressEventHandler(const SDL_Event &event, uint16_t modState)
 {
+	if (IsWindowCloseRequest(event)) {
+		// Closing the window quits (MainWndProc -> diablo_quit), which frees the game's memory and shuts SDL down. Here the main thread
+		// would do that while the loading thread is still building the level in that memory (use after free, a crash on closing the
+		// window during a loading screen). The quit waits until the level is loaded.
+		ProgressEventHandlerState.quitWhenLoaded = true;
+		return;
+	}
 	DisableInputEventHandler(event, modState);
 	if (!IsCustomEvent(event.type)) return;
 
@@ -517,6 +539,8 @@ void ProgressEventHandler(const SDL_Event &event, uint16_t modState)
 		}
 		break;
 	case WM_ERROR:
+		if (event.user.data2 != nullptr) // a fatal error of the loading thread, with its title (HandFatalErrorToMainThread)
+			DisplayFatalErrorAndExit(*static_cast<std::string *>(event.user.data2), *static_cast<std::string *>(event.user.data1));
 		app_fatal(*static_cast<std::string *>(event.user.data1));
 		break;
 	case WM_DONE: {
@@ -657,6 +681,33 @@ bool LoadingInProgress()
 	return IsProgress;
 }
 
+namespace {
+/** The loading thread while it runs (ShowProgress), else none. */
+std::atomic<decltype(this_sdl_thread::get_id())> LoadingThread {};
+} // namespace
+
+bool OnLoadingThread()
+{
+	const auto loading = LoadingThread.load();
+	return loading != decltype(loading) {} && loading == this_sdl_thread::get_id();
+}
+
+void HandFatalErrorToMainThread(std::string_view title, std::string_view body)
+{
+	SDL_Event event {};
+	CustomEventToSdlEvent(event, WM_ERROR);
+	event.user.data1 = new std::string(body);
+	event.user.data2 = new std::string(title);
+	if (!SDLC_PushEvent(&event)) {
+		LogError("Failed to send WM_ERROR {}", SDL_GetError());
+		SDL_ClearError();
+	}
+	// The main thread's loading screen shows the error and exits; nothing more is done here (the level is half loaded). Not SDL_Delay:
+	// SDL is shut down (SDL_Quit) before the exit, and a call into it from here then jumped to a null pointer.
+	while (true)
+		std::this_thread::sleep_for(std::chrono::seconds(1));
+}
+
 void ShowProgress(interface_mode uMsg)
 {
 	IsProgress = true;
@@ -667,6 +718,7 @@ void ShowProgress(interface_mode uMsg)
 	ProgressEventHandlerState.skipRendering = true;
 	ProgressEventHandlerState.done = false;
 	ProgressEventHandlerState.drawnProgress = 0;
+	ProgressEventHandlerState.quitWhenLoaded = false;
 
 #ifndef USE_SDL1
 	DeactivateVirtualGamepad();
@@ -702,13 +754,19 @@ void ShowProgress(interface_mode uMsg)
 	static interface_mode loadTarget;
 	loadTarget = uMsg;
 	SdlThread loadThread = SdlThread([]() {
+		LoadingThread = this_sdl_thread::get_id();
 		const uint32_t start = SDL_GetTicks();
 		DoLoad(loadTarget);
 		LogVerbose("Load thread finished in {}ms", SDL_GetTicks() - start);
 	});
 	while (HandleProgressBarUpdate()) { }
 	loadThread.join();
+	LoadingThread = {};
 #endif
+	if (ProgressEventHandlerState.quitWhenLoaded) {
+		LogInfo("The window was closed while loading: quitting now that the level is loaded");
+		diablo_quit(0);
+	}
 }
 
 } // namespace devilution

@@ -20,6 +20,7 @@
 
 #include "diablo.h"
 #include "dvlnet/leaveinfo.hpp"
+#include "interfac.h"
 #include "multi.h"
 #include "storm/storm_net.hpp"
 #include "utils/format.hpp"
@@ -61,6 +62,10 @@ void FreeDlg()
 
 void DisplayFatalErrorAndExit(std::string_view title, std::string_view body)
 {
+	// On the loading thread (a sound, a file or the save that can't be read or written while a level loads) the error box and the quit
+	// ran beside the main thread's loading screen: both drew and read events, and the quit freed the game under it. The main thread does it.
+	if (OnLoadingThread())
+		HandFatalErrorToMainThread(title, body);
 	FreeDlg();
 	UiErrorOkDialog(title, body);
 	diablo_quit(1);

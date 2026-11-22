@@ -28,6 +28,13 @@
 #include "utils/log.hpp"
 #include "utils/ui_fwd.h"
 
+#ifdef USE_SDL3
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_timer.h>
+#else
+#include <SDL.h>
+#endif
+
 namespace devilution::hd_showcase {
 
 namespace {
@@ -127,6 +134,25 @@ bool MakeItem(const std::string &name, bool identified, Item &item)
 		return true;
 	}
 	return false;
+}
+
+#ifdef USE_SDL3
+Uint32 SDLCALL PushCloseRequest(void * /*userdata*/, SDL_TimerID /*timer*/, Uint32 /*interval*/)
+#else
+Uint32 SDLCALL PushCloseRequest(Uint32 /*interval*/, void * /*userdata*/)
+#endif
+{
+	SDL_Event close {};
+#ifdef USE_SDL3
+	close.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+#elif !defined(USE_SDL1)
+	close.type = SDL_WINDOWEVENT;
+	close.window.event = SDL_WINDOWEVENT_CLOSE;
+#else
+	close.type = SDL_QUIT; // (SDL 1 has no window events)
+#endif
+	SDL_PushEvent(&close);
+	return 0; // (once)
 }
 
 } // namespace
@@ -322,6 +348,14 @@ void AfterGameTick()
 		trim(hwm);
 		LogInfo("HD showcase: mem {} hd_bytes {} hd_peak {} images {} indexed {} loads {} unloads {} held_frames {} rss {} hwm {}", command.args.empty() ? "" : command.args[0],
 		    use.bytes, use.peak, use.images, use.indexed, use.loads, use.unloads, hd::Held().frames, rss, hwm);
+	} else if (command.verb == "loadclose" && !command.args.empty()) {
+		// loadclose <level> [ms]: off to that level, and the window is closed during its loading screen, ms (default 500) after the level
+		// change is asked for (an SDL timer pushes the close request: by then the loading thread is building the level). The game must quit once
+		// the level is loaded (log "quitting now that the level is loaded", exit 0) and not free the game under the loading thread.
+		StartNewLvl(*MyPlayer, WM_DIABNEXTLVL, Int(command, 0));
+		const int delay = command.args.size() > 1 ? Int(command, 1) : 500;
+		SDL_AddTimer(static_cast<uint32_t>(std::max(delay, 1)), PushCloseRequest, nullptr);
+		LogInfo("HD showcase: loadclose {} (window closed after {} ms)", Int(command, 0), delay);
 	} else if (command.verb == "quit") {
 		diablo_quit(0);
 	} else {
