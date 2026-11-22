@@ -24,6 +24,7 @@
 
 #include "control/control.hpp"
 #include "controls/input.h"
+#include "diablo.h"
 #include "engine/clx_sprite.hpp"
 #include "engine/dx.h"
 #include "engine/events.hpp"
@@ -269,6 +270,7 @@ struct {
 	bool done;
 	uint32_t drawnProgress;
 	std::array<SDL_Color, 256> palette;
+	bool quitWhenLoaded; ///< the window was closed during the loading screen: quit once the level is loaded (ShowProgress)
 } ProgressEventHandlerState;
 
 void InitRendering()
@@ -503,8 +505,26 @@ void DoLoad(interface_mode uMsg)
 #endif
 }
 
+bool IsWindowCloseRequest(const SDL_Event &event)
+{
+#ifdef USE_SDL3
+	return event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+#elif !defined(USE_SDL1)
+	return event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE;
+#else
+	return false;
+#endif
+}
+
 void ProgressEventHandler(const SDL_Event &event, uint16_t modState)
 {
+	if (IsWindowCloseRequest(event)) {
+		// Closing the window quits (MainWndProc -> diablo_quit), which frees the game's memory and shuts SDL down. Here the main thread
+		// would do that while the loading thread is still building the level in that memory (use after free, a crash on closing the
+		// window during a loading screen). The quit waits until the level is loaded.
+		ProgressEventHandlerState.quitWhenLoaded = true;
+		return;
+	}
 	DisableInputEventHandler(event, modState);
 	if (!IsCustomEvent(event.type)) return;
 
@@ -667,6 +687,7 @@ void ShowProgress(interface_mode uMsg)
 	ProgressEventHandlerState.skipRendering = true;
 	ProgressEventHandlerState.done = false;
 	ProgressEventHandlerState.drawnProgress = 0;
+	ProgressEventHandlerState.quitWhenLoaded = false;
 
 #ifndef USE_SDL1
 	DeactivateVirtualGamepad();
@@ -709,6 +730,10 @@ void ShowProgress(interface_mode uMsg)
 	while (HandleProgressBarUpdate()) { }
 	loadThread.join();
 #endif
+	if (ProgressEventHandlerState.quitWhenLoaded) {
+		LogInfo("The window was closed while loading: quitting now that the level is loaded");
+		diablo_quit(0);
+	}
 }
 
 } // namespace devilution
