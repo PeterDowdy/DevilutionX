@@ -285,6 +285,14 @@ constexpr size_t MaxChunks = MaxMultiplayerLevels + 4;
 
 uint32_t sgdwOwnerWait;
 uint32_t sgdwRecvOffset;
+/**
+ * A joiner waits for the level data (msg_wait_resync) at most this long without any of it arriving, then gives up ("Unable to get level
+ * data") instead of waiting forever when the request or its answer is lost (the sender's connection gone, a stale request).
+ */
+constexpr uint32_t LevelDataTimeoutMs = 30000;
+uint32_t LevelDataMessages;      ///< level data messages received (OnLevelData), from anyone
+uint32_t LevelDataMessagesSeen;  ///< LevelDataMessages when WaitForTurns last saw it change
+uint32_t LevelDataLastProgress;  ///< SDL_GetTicks() then (or when the wait began)
 int sgnCurrMegaPlayer;
 ankerl::unordered_dense::map<uint8_t, DLevel> DeltaLevels;
 uint8_t sbLastCmd;
@@ -551,8 +559,15 @@ int WaitForTurns()
 		nthread_recv_turns();
 	}
 
-	if (gbGameDestroyed)
+	if (gbGameDestroyed || SNetConnectionLost())
 		return 100;
+	if (LevelDataMessages != LevelDataMessagesSeen) {
+		LevelDataMessagesSeen = LevelDataMessages;
+		LevelDataLastProgress = SDL_GetTicks();
+	} else if (SDL_GetTicks() - LevelDataLastProgress > LevelDataTimeoutMs) {
+		LogError("No level data arrived for {} seconds: giving up joining the game", LevelDataTimeoutMs / 1000);
+		return 100; // (sgbDeltaChunks != MaxChunks: msg_wait_resync reports the failure)
+	}
 	if (gbDeltaSender >= Players.size()) {
 		sgbDeltaChunks = 0;
 		sgbRecvCmd = CMD_DLEVEL_END;
@@ -1002,6 +1017,7 @@ size_t OnLevelData(const TCmdPlrInfoHdr &message, size_t maxCmdSize, const Playe
 	if (!ValidateCmdSize(wBytes + sizeof(message), maxCmdSize, player.getId()))
 		return maxCmdSize;
 
+	++LevelDataMessages; // (progress for WaitForTurns' time limit)
 	if (gbDeltaSender != player.getId()) {
 		if (message.bCmd != CMD_DLEVEL_END && (message.bCmd != CMD_DLEVEL || wOffset != 0)) {
 			return wBytes + sizeof(message);
@@ -2774,9 +2790,17 @@ bool msg_wait_resync()
 	sgbRecvCmd = CMD_DLEVEL_END;
 	gbBufferMsgs = 1;
 	sgdwOwnerWait = SDL_GetTicks();
+	LevelDataMessagesSeen = LevelDataMessages;
+	LevelDataLastProgress = SDL_GetTicks();
 	success = UiProgressDialog(WaitForTurns);
 	gbBufferMsgs = 0;
 	if (!success) {
+		FreePackets();
+		return false;
+	}
+
+	if (SNetConnectionLost()) {
+		UiErrorOkDialog(PROJECT_NAME, _("Connection to the game was lost"), /*error=*/false);
 		FreePackets();
 		return false;
 	}

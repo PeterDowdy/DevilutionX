@@ -23,6 +23,7 @@ set(tests
   drlg_l2_test
   drlg_l3_test
   drlg_l4_test
+  dvlnet_join_test
   dvlnet_leave_test
   effects_test
   inv_test
@@ -77,6 +78,9 @@ if(NOT USE_SDL1)
 endif()
 if(DEVILUTIONX_SCORING)
   list(APPEND standalone_tests score_rules_test)
+endif()
+if(NOT NONET AND NOT DISABLE_TCP)
+  list(APPEND tests dvlnet_connection_test)
 endif()
 set(benchmarks
   clx_render_benchmark

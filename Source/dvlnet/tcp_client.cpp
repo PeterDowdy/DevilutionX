@@ -162,13 +162,13 @@ std::expected<void, PacketError> tcp_client::poll()
 void tcp_client::HandleReceive(const asio::error_code &error, size_t bytesRead)
 {
 	if (error) {
-		const PacketError packetError = IoHandlerError(error.message());
-		RaiseIoHandlerError(packetError);
+		if (leaving_)
+			return; // (SNetLeaveGame closed the socket)
+		LoseConnection(IoHandlerError(error.message()));
 		return;
 	}
 	if (bytesRead == 0) {
-		const PacketError packetError(_("error: read 0 bytes from server"));
-		RaiseIoHandlerError(packetError);
+		LoseConnection(PacketError(_("error: read 0 bytes from server")));
 		return;
 	}
 	recv_buffer.resize(bytesRead);
@@ -177,7 +177,7 @@ void tcp_client::HandleReceive(const asio::error_code &error, size_t bytesRead)
 	while (true) {
 		std::expected<bool, PacketError> ready = recv_queue.PacketReady();
 		if (!ready.has_value()) {
-			RaiseIoHandlerError(ready.error());
+			LoseConnection(ready.error());
 			return;
 		}
 		if (!*ready)
@@ -191,7 +191,8 @@ void tcp_client::HandleReceive(const asio::error_code &error, size_t bytesRead)
 		          .and_then([this](buffer_t &&pktData) { return pktfty->make_packet(pktData); })
 		          .and_then([this](std::unique_ptr<packet> &&pkt) { return RecvLocal(*pkt); });
 		if (!result.has_value()) {
-			RaiseIoHandlerError(result.error());
+			// The receive loop ends here (no StartReceive): this used to leave the game silently deaf, logged only at verbose level
+			LoseConnection(result.error());
 			return;
 		}
 	}
@@ -217,7 +218,9 @@ void tcp_client::HandleSend(const asio::error_code &error, size_t /*bytesSent*/)
 {
 	if (error) {
 		sendQueue.clear();
-		RaiseIoHandlerError(error.message());
+		if (leaving_)
+			return; // (SNetLeaveGame closed the socket)
+		LoseConnection(PacketError(error.message()));
 		return;
 	}
 	if (!sendQueue.empty())
@@ -230,21 +233,21 @@ void tcp_client::HandleTcpErrorCode()
 {
 	std::expected<buffer_t, PacketError> packet = recv_queue.ReadPacket();
 	if (!packet.has_value()) {
-		RaiseIoHandlerError(packet.error());
+		LoseConnection(packet.error());
 		return;
 	}
 
 	buffer_t pktData = *packet;
 	if (pktData.size() != 1) {
-		RaiseIoHandlerError(PacketError());
+		LoseConnection(PacketError());
 		return;
 	}
 
 	auto code = static_cast<PacketError::ErrorCode>(pktData[0]);
 	if (code == PacketError::ErrorCode::DecryptionFailed)
-		RaiseIoHandlerError(_("Server failed to decrypt your packet. Check if you typed the password correctly."));
+		LoseConnection(PacketError(_("Server failed to decrypt your packet. Check if you typed the password correctly.")));
 	else
-		RaiseIoHandlerError(std::format("Unknown error code received from server: {:#04x}", pktData[0]));
+		LoseConnection(PacketError(std::format("Unknown error code received from server: {:#04x}", pktData[0])));
 }
 
 std::expected<void, PacketError> tcp_client::send(packet &pkt)
@@ -269,10 +272,16 @@ bool tcp_client::SNetLeaveGame(net::leaveinfo_t type)
 {
 	auto ret = base::SNetLeaveGame(type);
 	process_network_packets();
+	leaving_ = true;
 	if (local_server != nullptr)
 		local_server->Close();
 	sock.close();
 	return ret;
+}
+
+bool tcp_client::connection_lost()
+{
+	return connectionLost_;
 }
 
 std::string tcp_client::make_default_gamename()
@@ -283,6 +292,15 @@ std::string tcp_client::make_default_gamename()
 void tcp_client::RaiseIoHandlerError(const PacketError &error)
 {
 	ioHandlerResult.emplace(error);
+}
+
+void tcp_client::LoseConnection(const PacketError &error)
+{
+	// While joining, join() reports the failure itself ("Unable to connect")
+	if (!connectionLost_ && plr_self != PLR_BROADCAST)
+		LogError("Connection to the game lost: {}", error.what());
+	connectionLost_ = true;
+	RaiseIoHandlerError(error);
 }
 
 tcp_client::~tcp_client()

@@ -59,6 +59,9 @@ struct DvlNetLatencies {
 bool SNetCreateGame(const char *pszGameName, const char *pszGamePassword, char *GameTemplateData, int GameTemplateSize, int *playerID);
 bool SNetDestroy();
 
+/** Whether the connection to the game broke (the host quit or crashed, the network went away): see abstract_net::connection_lost. */
+bool SNetConnectionLost();
+
 /*  SNetDropPlayer @ 106
  *
  *  Drops a player from the current game.

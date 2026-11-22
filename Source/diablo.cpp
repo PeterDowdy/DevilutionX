@@ -2777,6 +2777,10 @@ bool StartGame(bool bNewGame, bool bSinglePlayer)
 		// initialize main menu resources.
 		if (gbRunGameResult)
 			UiInitialize();
+		if (gbRunGameResult && gbConnectionLost) {
+			gbConnectionLost = false;
+			UiErrorOkDialog(PROJECT_NAME, _("Connection to the game was lost"), /*error=*/false);
+		}
 		if (ReturnToMainMenu)
 			return true;
 	} while (gbRunGameResult);
