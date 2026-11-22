@@ -33,11 +33,17 @@ SdlMutex storm_net_mutex;
 #endif
 } // namespace
 
+// A fatal error destroys the network (app_fatal -> SNetDestroy) on whichever thread it happens, while the network thread (nthread) may
+// still be sending and receiving turns, and the game thread messages, until the game is closed: then there is nothing to receive, and
+// what is sent goes nowhere (it used to be a call through a null dvlnet_inst).
+
 bool SNetReceiveMessage(uint8_t *senderplayerid, void **data, size_t *databytes)
 {
 #ifndef NONET
 	std::lock_guard<SdlMutex> lg(storm_net_mutex);
 #endif
+	if (dvlnet_inst == nullptr)
+		return false;
 	return dvlnet_inst->SNetReceiveMessage(senderplayerid, data, databytes);
 }
 
@@ -46,6 +52,8 @@ bool SNetSendMessage(uint8_t playerID, void *data, size_t databytes)
 #ifndef NONET
 	std::lock_guard<SdlMutex> lg(storm_net_mutex);
 #endif
+	if (dvlnet_inst == nullptr)
+		return true;
 	return dvlnet_inst->SNetSendMessage(playerID, data, databytes);
 }
 
@@ -56,6 +64,8 @@ bool SNetReceiveTurns(int arraysize, char **arraydata, size_t *arraydatabytes, u
 #endif
 	if (arraysize != MAX_PLRS)
 		UNIMPLEMENTED();
+	if (dvlnet_inst == nullptr)
+		return false;
 	return dvlnet_inst->SNetReceiveTurns(arraydata, arraydatabytes, arrayplayerstatus);
 }
 
@@ -64,6 +74,8 @@ bool SNetSendTurn(char *data, size_t databytes)
 #ifndef NONET
 	std::lock_guard<SdlMutex> lg(storm_net_mutex);
 #endif
+	if (dvlnet_inst == nullptr)
+		return true;
 	return dvlnet_inst->SNetSendTurn(data, databytes);
 }
 
@@ -221,6 +233,10 @@ bool SNetGetTurnsInTransit(uint32_t *turns)
 #ifndef NONET
 	std::lock_guard<SdlMutex> lg(storm_net_mutex);
 #endif
+	if (dvlnet_inst == nullptr) { // (destroyed by a fatal error: see SNetReceiveMessage)
+		*turns = 0;
+		return true;
+	}
 	return dvlnet_inst->SNetGetTurnsInTransit(turns);
 }
 

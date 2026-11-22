@@ -392,6 +392,12 @@ bool base::SNetSendTurn(char *data, size_t size)
 	if (size != sizeof(int32_t))
 		ABORT();
 
+	// Not in a game (yet, or any more: SNetLeaveGame resets plr_self). The network thread (nthread) goes on sending turns until the game
+	// stops it (NetClose), and a fatal error or the end of the game (app_fatal, DoEnding) leaves the game first, on another thread: the
+	// turn used to go into playerStateTable_[PLR_BROADCAST], past the end of the table (heap overflow).
+	if (plr_self == PLR_BROADCAST)
+		return true;
+
 	turn_t turn;
 	turn.SequenceNumber = next_turn;
 	std::memcpy(&turn.Value, data, size);
@@ -422,7 +428,7 @@ std::expected<void, PacketError> base::SendTurnIfReady(turn_t turn)
 
 std::expected<void, PacketError> base::SendFirstTurnIfReady(plr_t player)
 {
-	if (awaitingSequenceNumber_)
+	if (awaitingSequenceNumber_ || plr_self == PLR_BROADCAST) // (no own turns out of a game: see SNetSendTurn)
 		return {};
 
 	const PlayerState &playerState = playerStateTable_[plr_self];
@@ -453,6 +459,8 @@ std::expected<void, PacketError> base::MakeReady(seq_t sequenceNumber)
 	next_turn = sequenceNumber;
 	awaitingSequenceNumber_ = false;
 
+	if (plr_self == PLR_BROADCAST) // (no own turns out of a game: see SNetSendTurn)
+		return {};
 	PlayerState &playerState = playerStateTable_[plr_self];
 	std::deque<turn_t> &turnQueue = playerState.turnQueue;
 	for (turn_t &turn : turnQueue) {
@@ -575,6 +583,10 @@ bool base::SNetGetOwnerTurnsWaiting(uint32_t *turns)
 
 bool base::SNetGetTurnsInTransit(uint32_t *turns)
 {
+	if (plr_self == PLR_BROADCAST) { // (no own turns out of a game: see SNetSendTurn)
+		*turns = 0;
+		return true;
+	}
 	const PlayerState &playerState = playerStateTable_[plr_self];
 	const std::deque<turn_t> &turnQueue = playerState.turnQueue;
 	*turns = static_cast<uint32_t>(turnQueue.size());
