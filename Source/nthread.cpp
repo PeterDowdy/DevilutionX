@@ -5,6 +5,7 @@
  */
 #include "nthread.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -31,13 +32,14 @@ uint32_t gdwTurnsInTransit;
 uintptr_t glpMsgTbl[MAX_PLRS];
 uint32_t gdwLargestMsgSize;
 uint32_t gdwNormalMsgSize;
-int last_tick;
+std::atomic<int> last_tick; ///< also advanced by the network thread (nthread_recv_turns) while the main thread draws a fade
 uint8_t ProgressToNextGameTick = 0;
 
 namespace {
 
 SdlMutex MemCrit;
-bool nthread_should_run;
+/** Set by the game thread (nthread_start, nthread_cleanup), read by the network thread also outside MemCrit (after its delay). */
+std::atomic<bool> nthread_should_run;
 int8_t sgbSyncCountdown;
 uint32_t turn_upper_bit;
 bool sgbTicsOutOfSync;
@@ -189,14 +191,16 @@ void nthread_start(bool setTurnUpperBit)
 void nthread_cleanup()
 {
 	nthread_should_run = false;
-	gdwTurnsInTransit = 0;
-	gdwNormalMsgSize = 0;
-	gdwLargestMsgSize = 0;
 	if (Thread.joinable() && Thread.get_id() != this_sdl_thread::get_id()) {
 		if (!sgbThreadIsRunning)
 			MemCrit.unlock();
 		Thread.join();
 	}
+	// Once the network thread has stopped: it reads them (nthread_send_and_recv_turn) until then, and a game left during a level change
+	// (sgbThreadIsRunning) doesn't hold MemCrit against it
+	gdwTurnsInTransit = 0;
+	gdwNormalMsgSize = 0;
+	gdwLargestMsgSize = 0;
 }
 
 void nthread_ignore_mutex(bool bStart)

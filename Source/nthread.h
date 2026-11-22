@@ -5,6 +5,7 @@
  */
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "player.h"
@@ -20,7 +21,7 @@ extern uint32_t gdwLargestMsgSize;
 extern uint32_t gdwNormalMsgSize;
 /** @brief the progress as a fraction (see AnimationInfo::baseValueFraction) in time to the next game tick */
 extern DVL_API_FOR_TEST uint8_t ProgressToNextGameTick;
-extern int last_tick;
+extern std::atomic<int> last_tick;
 
 void nthread_terminate_game(const char *pszFcn);
 uint32_t nthread_send_and_recv_turn(uint32_t curTurn, int turnDelta);
