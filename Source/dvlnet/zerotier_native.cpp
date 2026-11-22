@@ -1,6 +1,7 @@
 #include "dvlnet/zerotier_native.h"
 
 #include <atomic>
+#include <mutex>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_timer.h>
@@ -37,6 +38,7 @@
 #include <cstdlib>
 
 #include "utils/algorithm/container.hpp"
+#include "utils/sdl_mutex.h"
 #include "utils/log.hpp"
 #include "utils/paths.h"
 
@@ -56,6 +58,12 @@ std::atomic_bool zt_joined(false);
 std::atomic_uint zt_peers_ready(0);
 
 ankerl::unordered_dense::map<uint64_t, zts_event_t> ztPeerEvents;
+/**
+ * libzt calls Callback on a thread of its own, which adds to and erases from ztPeerEvents while the game's thread looks peers up in it
+ * (zerotier_is_relayed: the network timeout screen, the latency command), and a lookup during an insert's rehash read freed memory.
+ * Taken last (after zts_core_lock in zerotier_is_relayed).
+ */
+SdlMutex ztPeerEventsMutex;
 
 #ifdef DVL_ZT_SYMLINK
 bool HasMultiByteChars(std::string_view path)
@@ -169,15 +177,17 @@ void Callback(void *ptr)
 		break;
 
 	case ZTS_EVENT_PEER_DIRECT:
-	case ZTS_EVENT_PEER_RELAY:
+	case ZTS_EVENT_PEER_RELAY: {
+		const std::lock_guard<SdlMutex> lock(ztPeerEventsMutex);
 		ztPeerEvents[msg->peer->peer_id] = static_cast<zts_event_t>(msg->event_code);
 		if (!zerotier_peers_ready())
 			zt_peers_ready = SDL_GetTicks();
-		break;
+	} break;
 
-	case ZTS_EVENT_PEER_PATH_DEAD:
+	case ZTS_EVENT_PEER_PATH_DEAD: {
+		const std::lock_guard<SdlMutex> lock(ztPeerEventsMutex);
 		ztPeerEvents.erase(msg->peer->peer_id);
-		break;
+	} break;
 	}
 }
 
@@ -212,6 +222,7 @@ bool zerotier_is_relayed(uint64_t mac)
 		return isRelayed;
 	zts_peer_info_t peerInfo;
 	if (zts_core_query_peer_info(ZtNetwork, mac, &peerInfo) == ZTS_ERR_OK) {
+		const std::lock_guard<SdlMutex> lock(ztPeerEventsMutex);
 		auto peerEvent = ztPeerEvents.find(peerInfo.peer_id);
 		if (peerEvent != ztPeerEvents.end())
 			isRelayed = (peerEvent->second == ZTS_EVENT_PEER_RELAY);
