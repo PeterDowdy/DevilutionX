@@ -167,6 +167,8 @@ namespace {
 
 char gszVersionNumber[64] = "internal version unknown";
 
+void MusicAfterLoading();
+
 bool gbGameLoopStartup;
 bool forceSpawn;
 bool forceDiablo;
@@ -191,6 +193,7 @@ void StartGame(interface_mode uMsg)
 	InitMonsterHealthBar();
 	InitXPBar();
 	ShowProgress(uMsg);
+	MusicAfterLoading();
 	gmenu_init_menu();
 	InitLevelCursor();
 	sgnTimeoutCurs = CURSOR_NONE;
@@ -880,6 +883,7 @@ void GameEventHandler(const SDL_Event &event, uint16_t modState)
 			PaletteFadeOut(8);
 			sound_stop();
 			ShowProgress(GetCustomEvent(event));
+			MusicAfterLoading();
 
 			PrepareForFadeIn();
 			LoadPWaterPalette();
@@ -2990,6 +2994,21 @@ void diablo_pause_game()
 bool GameWasAlreadyPaused = false;
 bool MinimizePaused = false;
 
+namespace {
+
+/** The window got focus back during a loading screen: the music is unmuted once the level has loaded (diablo_focus_unpause). */
+bool UnmuteMusicAfterLoading = false;
+
+void MusicAfterLoading()
+{
+	if (!UnmuteMusicAfterLoading) return;
+	UnmuteMusicAfterLoading = false;
+	if (!MinimizePaused)
+		music_unmute();
+}
+
+} // namespace
+
 bool diablo_is_focused()
 {
 #ifndef USE_SDL1
@@ -3032,7 +3051,11 @@ void diablo_focus_unpause()
 	}
 
 	SVidUnmute();
-	music_unmute();
+	// Not while a level loads: the loading thread replaces the music (music_stop, music_start), as in diablo_focus_pause
+	if (LoadingInProgress())
+		UnmuteMusicAfterLoading = true;
+	else
+		music_unmute();
 
 	MinimizePaused = false;
 }
