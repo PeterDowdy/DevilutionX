@@ -2352,6 +2352,9 @@ void SetTarget(SDL_Surface *palSurface)
 void TrackOffscreen(SDL_Surface *buffer)
 {
 	if (!Active || buffer == nullptr) return;
+	// The level loader thread tracks the panel's buffers (InitMainPanel, on a game's first level) while the main thread presents the loading
+	// screen, and Collect (under ImagesMutex) reads every tracked plane: adding to Offscreens moved them under it.
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	Offscreen *off = FindOffscreen(buffer);
 	if (off == nullptr) off = &Offscreens.emplace_back(Offscreen { buffer, {} });
 	off->plane.assign(static_cast<size_t>(buffer->pitch) * buffer->h, PixelProvenance {});
@@ -2359,6 +2362,7 @@ void TrackOffscreen(SDL_Surface *buffer)
 
 void ForgetOffscreen(SDL_Surface *buffer)
 {
+	const std::lock_guard<std::mutex> lock(ImagesMutex); // (see TrackOffscreen)
 	Offscreens.erase(std::remove_if(Offscreens.begin(), Offscreens.end(), [buffer](const Offscreen &o) { return o.surface == buffer; }), Offscreens.end());
 }
 
