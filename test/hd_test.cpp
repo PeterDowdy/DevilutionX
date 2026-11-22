@@ -1987,5 +1987,97 @@ TEST(HdTest, HeldArtIsLetGoOfWhenTheHeroHoldsAnotherItem)
 	EXPECT_EQ(hd::Held().frames, 0U);
 }
 
+TEST(HdTest, TileVariantFileNamesArtByPosition)
+{
+	EXPECT_EQ(hd::TileVariantFile("l1", 5, { 18, 23 }, 4, 0), "tile/l1/5@2-3.png");
+	EXPECT_EQ(hd::TileVariantFile("l1", 5, { 18, 23 }, 0, 0), "") << "no variants asked for";
+	EXPECT_EQ(hd::TileVariantFile("l1", 5, { -1, -1 }, 4, 0), "") << "no position";
+	const std::string a = hd::TileVariantFile("l1", 5, { 18, 23 }, 0, 6);
+	EXPECT_EQ(a, hd::TileVariantFile("l1", 5, { 18, 23 }, 0, 6)) << "the same position picks the same variant";
+	std::array<bool, 6> seen {};
+	for (int x = 16; x < 48; ++x) {
+		for (int y = 16; y < 48; ++y) {
+			const std::string f = hd::TileVariantFile("l1", 5, { x, y }, 0, 6);
+			ASSERT_EQ(f.rfind("tile/l1/5@h", 0), 0U);
+			seen[std::stoi(f.substr(11))] = true;
+		}
+	}
+	for (int k = 0; k < 6; ++k)
+		EXPECT_TRUE(seen[k]) << "variant " << k << " is used";
+}
+
+/** One pillar's HD image of one colour, ``w`` x ``h`` pixels. */
+void WriteTileArt(const fs::path &pack, const std::string &file, SDL_Color c, int w, int h, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, SDL_PIXELFORMAT_ARGB8888);
+	SDL_FillRect(s, nullptr, SDL_MapRGBA(s->format, c.r, c.g, c.b, 255));
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	index << "image " << file << " palettes/test.pal\n";
+}
+
+/** Draws pillar 7 of tileset "t" (one 64x32 row) at dungeon position ``tile`` in a pack with ``periodLine`` and returns the HD frame. */
+SDL_Surface *DrawPillarAt(const std::string &name, const std::string &periodLine, Point tile)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n" << periodLine;
+		WriteTileArt(pack, "tile/t/7.png", FrontArt, 128, 64, index);
+		WriteTileArt(pack, "tile/t/7@1-0.png", BackArt, 128, 64, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	if (!hd::Enabled()) return nullptr;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 32, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	hd::SetTileset("t");
+	{
+		const Surface out(pal);
+		const hd::PillarScope pillar(out, { 0, 31 }, 7, 1, tile);
+		const uint8_t art = Own;
+		uint8_t *dst = static_cast<uint8_t *>(pal->pixels) + 4 * pal->pitch + 4;
+		*dst = Own;
+		hd::Mark(dst, &art, 1);
+	}
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	hd::SetTileset("");
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, APillarDrawsItsArtForThePositionWhenThePackHasSome)
+{
+	SDL_Surface *variant = DrawPillarAt("tile_variant", "tileperiod t 2\n", { 17, 20 }); // 17 % 2 = 1, 20 % 2 = 0: 7@1-0
+	ASSERT_NE(variant, nullptr);
+	ExpectColor(At(variant, 8, 8), BackArt.r, BackArt.g, BackArt.b, "the art for x % 2 = 1, y % 2 = 0");
+	SDL_FreeSurface(variant);
+
+	SDL_Surface *fallback = DrawPillarAt("tile_fallback", "tileperiod t 2\n", { 16, 20 }); // 7@0-0 is not in the pack
+	ASSERT_NE(fallback, nullptr);
+	ExpectColor(At(fallback, 8, 8), FrontArt.r, FrontArt.g, FrontArt.b, "no art for this position: the pillar's own");
+	SDL_FreeSurface(fallback);
+
+	SDL_Surface *off = DrawPillarAt("tile_off", "", { 17, 20 }); // the pack does not ask for art by position
+	ASSERT_NE(off, nullptr);
+	ExpectColor(At(off, 8, 8), FrontArt.r, FrontArt.g, FrontArt.b, "without tileperiod the variant files are not looked at");
+	SDL_FreeSurface(off);
+}
+
 } // namespace
 } // namespace devilution

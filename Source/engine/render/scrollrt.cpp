@@ -548,7 +548,7 @@ void DrawCell(const Surface &out, const Lightmap lightmap, Point tilePosition, P
 {
 	const uint16_t levelPieceId = dPiece[tilePosition.x][tilePosition.y];
 	const MICROS *pMap = &DPieceMicros[levelPieceId];
-	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2);
+	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2, tilePosition);
 
 	const uint8_t *tbl = LightTables[lightTableIndex].data();
 	const uint8_t *foliageTbl = tbl;
@@ -689,7 +689,7 @@ void DrawFloorTile(const Surface &out, const Lightmap &lightmap, Point tilePosit
 #endif
 
 	const uint16_t levelPieceId = dPiece[tilePosition.x][tilePosition.y];
-	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2);
+	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2, tilePosition);
 	{
 		const LevelCelBlock levelCelBlock { DPieceMicros[levelPieceId].mt[0] };
 		if (levelCelBlock.hasValue()) {

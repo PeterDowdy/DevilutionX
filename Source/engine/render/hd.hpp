@@ -398,10 +398,20 @@ public:
 	const uint8_t *marks = nullptr;
 };
 
-/** Tracks the pixels of one pillar: ``bottomLeft`` is the bottom-left pixel of its lowest pieces. */
+/**
+ * The pack file of a pillar's art for one dungeon position (``tile``, dPiece coordinates), when hd.txt asks for art by position:
+ * "tile/<tileset>/<pillar>@<x mod period>-<y mod period>.png" for ``period`` > 0 (a texture that repeats every ``period`` squares), else
+ * "tile/<tileset>/<pillar>@h<k>.png" with k one of ``hashes`` picked from the position; empty when neither (or for no position).
+ */
+std::string TileVariantFile(std::string_view tileset, uint16_t pillar, Point tile, int period, int hashes);
+
+/**
+ * Tracks the pixels of one pillar: ``bottomLeft`` is the bottom-left pixel of its lowest pieces, ``tile`` the dungeon position it is drawn
+ * at. Its art is the pack's art for that position when there is some (see TileVariantFile), else the pillar's own.
+ */
 class PillarScope {
 public:
-	PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows);
+	PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows, Point tile = { -1, -1 });
 	~PillarScope();
 };
 
