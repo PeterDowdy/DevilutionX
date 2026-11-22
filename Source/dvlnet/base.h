@@ -110,6 +110,8 @@ private:
 	uint32_t lastEchoTime = 0;
 
 	plr_t GetOwner();
+	/** The player that sends a joiner the level data: the first connected one other than this client (as multi.cpp HandleTurnUpperBit picks it). */
+	[[nodiscard]] plr_t LevelDataSender() const;
 	bool AllTurnsArrived();
 	std::expected<void, PacketError> MakeReady(seq_t sequenceNumber);
 	std::expected<void, PacketError> SendTurnIfReady(turn_t turn);

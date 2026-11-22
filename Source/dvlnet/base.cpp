@@ -139,8 +139,23 @@ std::expected<void, PacketError> base::HandleTurn(packet &pkt)
 	std::deque<turn_t> &turnQueue = playerState.turnQueue;
 	return pkt.Turn().transform([&](turn_t &&turn) {
 		turnQueue.push_back(turn);
-		MakeReady(turn.SequenceNumber);
+		// A joiner numbers its turns from a turn it hears (MakeReady), and asks for the level data with its first turn (the upper bit,
+		// multi.cpp HandleTurnUpperBit). The player that answers drops a turn numbered before its own current turn as stale (SNetReceiveTurns),
+		// and the other players can be a turn or two behind it: numbered from one of theirs, the request was dropped and the joiner waited
+		// for the level data forever. So the numbering comes from the turns of the player that sends the level data.
+		const plr_t sender = LevelDataSender();
+		if (sender == PLR_BROADCAST || src == sender)
+			MakeReady(turn.SequenceNumber);
 	});
+}
+
+plr_t base::LevelDataSender() const
+{
+	for (plr_t i = 0; i < Players.size(); ++i) {
+		if (i != plr_self && IsConnected(i))
+			return i;
+	}
+	return PLR_BROADCAST;
 }
 
 std::expected<void, PacketError> base::HandleDisconnect(packet &pkt)
