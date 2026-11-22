@@ -4,6 +4,7 @@
  * Implementation of load screens.
  */
 
+#include <atomic>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -64,7 +65,7 @@ constexpr uint32_t ProgressStepSize = 23;
 OptionalOwnedClxSpriteList sgpBackCel;
 
 bool IsProgress;
-uint32_t sgdwProgress;
+std::atomic<uint32_t> sgdwProgress; ///< written by the loading thread (IncProgress), read by the main thread drawing the bar
 int progress_id;
 
 /** The color used for the progress bar as an index into the palette. */
@@ -649,6 +650,11 @@ void CompleteProgress()
 	if (sgdwProgress < MaxProgress) {
 		IncProgress((MaxProgress - sgdwProgress) / ProgressStepSize);
 	}
+}
+
+bool LoadingInProgress()
+{
+	return IsProgress;
 }
 
 void ShowProgress(interface_mode uMsg)

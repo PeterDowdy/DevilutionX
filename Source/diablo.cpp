@@ -3008,14 +3008,19 @@ void diablo_focus_pause()
 
 	GameWasAlreadyPaused = PauseMode != 0;
 
+	// While a level loads, the loading thread frees and loads the sounds and the music (sound_init, music_start): stopping or muting
+	// them from here (the window lost focus during the loading screen) raced it. The new level starts with its sounds stopped anyway.
+	const bool loading = LoadingInProgress();
 	if (!GameWasAlreadyPaused) {
 		PauseMode = 2;
-		sound_stop();
+		if (!loading)
+			sound_stop();
 		LastPlayerAction = PlayerActionType::None;
 	}
 
 	SVidMute();
-	music_mute();
+	if (!loading)
+		music_mute();
 
 	MinimizePaused = true;
 }
