@@ -6,6 +6,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string_view>
 
 #ifdef USE_SDL3
 #include <SDL3/SDL_events.h>
@@ -76,5 +77,12 @@ void CompleteProgress();
 void ShowProgress(interface_mode uMsg);
 /** A level or game is loading (ShowProgress): the loading thread is freeing and loading the level's sounds, music and graphics. */
 bool LoadingInProgress();
+/** Whether this is the thread that loads a level (ShowProgress starts it; not where the platform loads on the main thread). */
+bool OnLoadingThread();
+/**
+ * @brief A fatal error on the loading thread: the main thread shows it and ends the program (as for a load that failed, WM_ERROR), and this
+ * thread waits for that. The error box and the quit (FreeGameMem, SDL_Quit) must not run here while the main thread runs the loading screen.
+ */
+[[noreturn]] void HandFatalErrorToMainThread(std::string_view title, std::string_view body);
 
 } // namespace devilution
