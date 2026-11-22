@@ -74,5 +74,7 @@ void interface_msg_pump();
 void IncProgress(uint32_t steps = 1);
 void CompleteProgress();
 void ShowProgress(interface_mode uMsg);
+/** A level or game is loading (ShowProgress): the loading thread is freeing and loading the level's sounds, music and graphics. */
+bool LoadingInProgress();
 
 } // namespace devilution

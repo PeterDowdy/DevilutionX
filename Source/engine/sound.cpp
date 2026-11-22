@@ -123,17 +123,20 @@ SoundSample *DuplicateSound(const SoundSample &sound)
 	if (duplicate->DuplicateFrom(sound) != 0)
 		return nullptr;
 	auto *result = duplicate.get();
-	decltype(duplicateSounds.begin()) it;
 	{
 		const std::lock_guard<SdlMutex> lock(*duplicateSoundsMutex);
 		duplicateSounds.push_back(std::move(duplicate));
-		it = duplicateSounds.end();
-		--it;
 	}
 #ifndef USE_SDL3
-	result->SetFinishCallback([it]([[maybe_unused]] Aulib::Stream &stream) {
+	// Runs on the audio thread when the duplicate has played. ClearDuplicateSounds may have taken the list meanwhile and be destroying
+	// this very sample on the main thread (it waits for the audio lock in ~Stream while this runs): an iterator kept from here would then
+	// point into that list and erasing through it freed the sample twice (heap corruption, seen as a crash at a later free). So the sample
+	// is looked for, and erased only while it is still in the list.
+	result->SetFinishCallback([result]([[maybe_unused]] Aulib::Stream &stream) {
 		const std::lock_guard<SdlMutex> lock(*duplicateSoundsMutex);
-		duplicateSounds.erase(it);
+		const auto it = std::find_if(duplicateSounds.begin(), duplicateSounds.end(), [result](const std::unique_ptr<SoundSample> &sample) { return sample.get() == result; });
+		if (it != duplicateSounds.end())
+			duplicateSounds.erase(it);
 	});
 #endif
 	return result;
