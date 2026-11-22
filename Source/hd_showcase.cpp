@@ -12,6 +12,7 @@
 
 #include "control/control.hpp"
 #include "diablo.h"
+#include "effects.h"
 #include "engine/render/hd.hpp"
 #include "engine/render/scrollrt.h"
 #include "interfac.h"
@@ -39,6 +40,9 @@ struct Command {
 std::vector<Command> Script;
 size_t NextCommand = 0;
 int TicksToWait = 0;
+int StormTicks = 0;     ///< sfxstorm: game ticks left
+int StormStopEvery = 0; ///< sfxstorm: every this many ticks, all sounds are stopped (sound_stop)
+int StormTick = 0;
 bool ScriptRead = false;
 bool LevelLoaded = false;
 bool ShowHero = false;
@@ -147,6 +151,17 @@ void AfterGameTick()
 	if (!Active()) return;
 	if (!ScriptRead) ReadScript();
 	if (LevelLoaded) Settle();
+	if (StormTicks > 0) {
+		// sfxstorm: the same short sounds again and again while they still play (each a duplicate, DuplicateSound) and all of them stopped
+		// every few ticks, so duplicates finish on the audio thread while sound_stop clears them (ClearDuplicateSounds)
+		--StormTicks;
+		for (int i = 0; i < 3; ++i)
+			for (const SfxID sfx : { SfxID::Walk, SfxID::Swing, SfxID::ShootBow, SfxID::CastSpell })
+				PlaySFX(sfx);
+		if (StormStopEvery > 0 && ++StormTick % StormStopEvery == 0) sound_stop();
+		if (StormTicks == 0) LogInfo("HD showcase: sfxstorm done");
+		return;
+	}
 	if (TicksToWait > 0) {
 		--TicksToWait;
 		return;
@@ -170,6 +185,11 @@ void AfterGameTick()
 		ViewPosition = { Int(command, 0), Int(command, 1) };
 	} else if (command.verb == "wait") {
 		TicksToWait = Int(command, 0);
+	} else if (command.verb == "sfxstorm" && !command.args.empty()) {
+		// sfxstorm <ticks> [stop every n ticks]: a stress of duplicate sounds finishing while they are cleared (see AfterGameTick)
+		StormTicks = Int(command, 0);
+		StormStopEvery = command.args.size() > 1 ? Int(command, 1) : 2;
+		StormTick = 0;
 	} else if (command.verb == "hero") {
 		ShowHero = true;
 	} else if (command.verb == "dim") {
