@@ -114,6 +114,14 @@ bool SNetDestroy()
 	return true;
 }
 
+bool SNetConnectionLost()
+{
+#ifndef NONET
+	std::lock_guard<SdlMutex> lg(storm_net_mutex);
+#endif
+	return dvlnet_inst != nullptr && dvlnet_inst->connection_lost();
+}
+
 bool SNetDropPlayer(uint8_t playerid, leaveinfo_t flags)
 {
 #ifndef NONET

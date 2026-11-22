@@ -140,4 +140,9 @@ DvlNetLatencies cdwrap::get_latencies(uint8_t playerid)
 	return dvlnet_wrap->get_latencies(playerid);
 }
 
+bool cdwrap::connection_lost()
+{
+	return dvlnet_wrap != nullptr && dvlnet_wrap->connection_lost();
+}
+
 } // namespace devilution::net

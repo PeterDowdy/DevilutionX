@@ -65,6 +65,13 @@ public:
 		return {};
 	}
 
+	/** Whether the connection to the game broke (read or write error, the other side closed, a packet that can't be read): nothing more
+	 *  will arrive. Not after leaving the game on purpose (SNetLeaveGame). */
+	virtual bool connection_lost()
+	{
+		return false;
+	}
+
 	static std::unique_ptr<abstract_net> MakeNet(provider_t provider);
 };
 

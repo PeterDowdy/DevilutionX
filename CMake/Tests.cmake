@@ -79,6 +79,9 @@ endif()
 if(DEVILUTIONX_SCORING)
   list(APPEND standalone_tests score_rules_test)
 endif()
+if(NOT NONET AND NOT DISABLE_TCP)
+  list(APPEND tests dvlnet_connection_test)
+endif()
 set(benchmarks
   clx_render_benchmark
   crawl_benchmark

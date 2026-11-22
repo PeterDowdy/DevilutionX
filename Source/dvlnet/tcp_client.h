@@ -27,6 +27,7 @@ public:
 	void DisconnectNet(plr_t plr) override;
 
 	bool SNetLeaveGame(net::leaveinfo_t type) override;
+	bool connection_lost() override;
 
 	~tcp_client() override;
 
@@ -50,6 +51,10 @@ private:
 	std::unique_ptr<tcp_server> local_server; // must be declared *after* ioc
 
 	std::optional<PacketError> ioHandlerResult;
+	/** The connection broke (LoseConnection): the receive loop has stopped, nothing more arrives. */
+	bool connectionLost_ = false;
+	/** SNetLeaveGame closed the socket on purpose: the aborted receive is not a lost connection. */
+	bool leaving_ = false;
 
 	/**
 	 * Frames waiting to be written, the front one being written. asio allows one async_write at a time per socket:
@@ -64,6 +69,8 @@ private:
 	void HandleTcpErrorCode();
 
 	void RaiseIoHandlerError(const PacketError &error);
+	/** A read or write failed, the server closed the connection or sent what can't be read: logged once, and connection_lost(). */
+	void LoseConnection(const PacketError &error);
 };
 
 } // namespace devilution::net

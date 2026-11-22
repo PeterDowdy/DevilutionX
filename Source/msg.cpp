@@ -559,7 +559,7 @@ int WaitForTurns()
 		nthread_recv_turns();
 	}
 
-	if (gbGameDestroyed)
+	if (gbGameDestroyed || SNetConnectionLost())
 		return 100;
 	if (LevelDataMessages != LevelDataMessagesSeen) {
 		LevelDataMessagesSeen = LevelDataMessages;
@@ -2795,6 +2795,12 @@ bool msg_wait_resync()
 	success = UiProgressDialog(WaitForTurns);
 	gbBufferMsgs = 0;
 	if (!success) {
+		FreePackets();
+		return false;
+	}
+
+	if (SNetConnectionLost()) {
+		UiErrorOkDialog(PROJECT_NAME, _("Connection to the game was lost"), /*error=*/false);
 		FreePackets();
 		return false;
 	}

@@ -50,6 +50,8 @@ extern bool gbSomebodyWonGameKludge;
 extern uint16_t sgwPackPlrOffsetTbl[MAX_PLRS];
 extern uint8_t gbActivePlayers;
 extern bool gbGameDestroyed;
+/** The game ended because the connection to it broke (multi_handle_delta): StartGame tells the player back at the game selection. */
+extern bool gbConnectionLost;
 extern bool gbSelectProvider;
 extern std::string GameName;
 extern std::string GamePassword;

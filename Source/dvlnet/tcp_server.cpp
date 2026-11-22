@@ -70,6 +70,10 @@ void tcp_server::HandleReceive(const scc &con, const asio::error_code &ec,
     size_t bytesRead)
 {
 	if (ec || bytesRead == 0) {
+		// A client that leaves closes its connection after its PT_DISCONNECT; one that crashed or lost the network closes it (or breaks
+		// it) without: either way the player leaves (DropConnection tells the others)
+		if (con->plr != PLR_BROADCAST)
+			LogInfo("Player {} closed the connection to this game{}{}", con->plr, ec ? ": " : "", ec ? ec.message() : "");
 		DropConnection(con);
 		return;
 	}
@@ -292,6 +296,8 @@ void tcp_server::HandleTimeout(const scc &con, const asio::error_code &ec)
 		con->timeout -= 1;
 	if (con->timeout <= 0) {
 		con->timeout = 0;
+		if (con->plr != PLR_BROADCAST)
+			LogInfo("Player {} timed out: dropped from this game", con->plr);
 		DropConnection(con);
 		return;
 	}

@@ -59,6 +59,7 @@ bool sgbPlayerLeftGameTbl[MAX_PLRS];
 bool shareNextHighPriorityMessage;
 uint8_t gbActivePlayers;
 bool gbGameDestroyed;
+bool gbConnectionLost;
 bool sgbSendDeltaTbl[MAX_PLRS];
 bool gbSelectProvider;
 int sglTimeoutStart;
@@ -699,6 +700,13 @@ bool multi_handle_delta()
 		gbRunGame = false;
 		return false;
 	}
+	if (SNetConnectionLost()) {
+		// Nothing more will arrive (the host quit or crashed, or the network went away): this player leaves the game, as a quit would,
+		// instead of waiting out the network timeout. The others see it leave when the host's server drops the connection.
+		gbConnectionLost = true;
+		gbRunGame = false;
+		return false;
+	}
 
 	for (uint8_t i = 0; i < Players.size(); i++) {
 		if (sgbSendDeltaTbl[i]) {
@@ -842,6 +850,7 @@ bool NetInit(bool bSinglePlayer)
 		InitGameInfo();
 		memset(sgbPlayerTurnBitTbl, 0, sizeof(sgbPlayerTurnBitTbl));
 		gbGameDestroyed = false;
+		gbConnectionLost = false;
 		memset(sgbPlayerLeftGameTbl, 0, sizeof(sgbPlayerLeftGameTbl));
 		memset(sgdwPlayerLeftReasonTbl, 0, sizeof(sgdwPlayerLeftReasonTbl));
 		memset(sgbSendDeltaTbl, 0, sizeof(sgbSendDeltaTbl));
