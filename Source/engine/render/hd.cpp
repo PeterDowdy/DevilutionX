@@ -159,6 +159,8 @@ std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any 
 std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying, while a NamedRecolour lives
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
+std::unordered_map<std::string, int> TilePeriods; ///< hd.txt "tileperiod <tileset> <P>": pillars may have art per position modulo P
+std::unordered_map<std::string, int> TileHashes;  ///< hd.txt "tilehash <tileset> <K>": pillars may have K variants picked by position
 thread_local std::string ItemArt; ///< "c057" while an ItemGraphic lives: the dropped item's own art is looked for first
 
 /** One unique item's art: the pack file name it is under, worked out when the item is first drawn (and again if its table entry changed). */
@@ -2003,6 +2005,8 @@ void Init()
 	PixelShading = false;
 	MonsterLights.clear();
 	MinBright = 0;
+	TilePeriods.clear();
+	TileHashes.clear();
 	BudgetBytes = DefaultBudgetMb << 20;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
@@ -2034,6 +2038,10 @@ void Init()
 		} else if (kind == "memory") {
 			double mb = 0;
 			if (words >> mb) BudgetBytes = static_cast<size_t>(std::max(0.0, mb) * (1 << 20));
+		} else if (kind == "tileperiod" || kind == "tilehash") {
+			std::string tileset;
+			int n = 0;
+			if (words >> tileset >> n && n > 0) (kind == "tileperiod" ? TilePeriods : TileHashes)[tileset] = n;
 		} else if (kind == "held") {
 			words >> held;
 		}
@@ -2515,12 +2523,34 @@ SpriteScope::~SpriteScope()
 	End();
 }
 
-PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows)
+std::string TileVariantFile(std::string_view tileset, uint16_t pillar, Point tile, int period, int hashes)
+{
+	if (tile.x < 0 || tile.y < 0) return {};
+	const std::string stem = "tile/" + std::string(tileset) + "/" + std::to_string(pillar) + "@";
+	if (period > 0) return stem + std::to_string(tile.x % period) + "-" + std::to_string(tile.y % period) + ".png";
+	if (hashes > 0) {
+		uint32_t h = static_cast<uint32_t>(tile.x) * 73856093U ^ static_cast<uint32_t>(tile.y) * 19349663U;
+		h ^= h >> 13;
+		h *= 0x5bd1e995U;
+		h ^= h >> 15;
+		return stem + "h" + std::to_string(h % static_cast<uint32_t>(hashes)) + ".png";
+	}
+	return {};
+}
+
+PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows, Point tile)
 {
 	uint32_t image = 0;
 	if (Active && !Tileset.empty()) {
 		const std::lock_guard<std::mutex> lock(ImagesMutex);
-		image = ImageId("tile/" + Tileset + "/" + std::to_string(pillar) + ".png", 64, rows * 32);
+		if (!TilePeriods.empty() || !TileHashes.empty()) { // art for this position first, when the pack has some for the tileset
+			const auto period = TilePeriods.find(Tileset);
+			const auto hashes = TileHashes.find(Tileset);
+			const std::string variant = TileVariantFile(Tileset, pillar, tile, period == TilePeriods.end() ? 0 : period->second,
+			    hashes == TileHashes.end() ? 0 : hashes->second);
+			if (!variant.empty() && Manifest.count(variant) != 0) image = ImageId(variant, 64, rows * 32);
+		}
+		if (image == 0) image = ImageId("tile/" + Tileset + "/" + std::to_string(pillar) + ".png", 64, rows * 32);
 		if (image != 0 && TileHeld.insert(image).second) Hold(image);
 	}
 	Begin(out, image, out.region.x + bottomLeft.x, out.region.y + bottomLeft.y - rows * 32 + 1);
