@@ -85,8 +85,21 @@
  *                                             item's picture as for a dropped item, "c<NNN>", or a unique item's "c<NNN>~<slug>".
  *                                             Looked for first while a hero draws (HeldItem): the unique's art, then its picture's,
  *                                             then the weapon set's as before. Weapons only: a hero holding a shield keeps the set's
- *                                             art. Effect layers stay those of the set's frame; the reference palette is the set's
- *                                             frame's. The folders are read when the pack loads; nothing of them is listed in hd.txt.
+ *                                             art, unless the pair's art below shows. Effect layers stay those of the set's frame; the
+ *                                             reference palette is the set's frame's. The folders are read when the pack loads; nothing
+ *                                             of them is listed in hd.txt.
+ *   pairs <dir> (a line of hd.txt)            where the art of heroes holding a weapon and a shield is, or a shield alone ("pairs pairs" for
+ *                                             <pack>/pairs; DEVILUTIONX_HD_PAIRS overrides it): laid out as the held folders are (render.json,
+ *                                             then <dir>/<key>/plrgfx/...), <key> "<weapon>+<shield>" ("c057+c083", "c131+c083~the-deflector",
+ *                                             "c057~doombringer+c113"), each side named as for held art, or "<shield>" alone ("c083": a hero
+ *                                             with a shield and no weapon it can use). Looked for before the held art: the pair with both
+ *                                             uniques' own names, the weapon's unique with the shield's picture, the weapon's picture with the
+ *                                             shield's unique, both pictures; then the weapon's held art; then the set's.
+ *
+ * Hero art (SetHeroArt, the "Hero Art" option): which of these a hero is drawn with. Original: no HD art for heroes at all (the 1997
+ * sprites; the rest of the pack as before). Scaled up: the weapon set's art ("sprite/plrgfx/..."). Unique weapons: the weapon's held art
+ * first (a hero with a shield keeps the set's art). Unique weapons and shields (the default): the pair's art first, then the weapon's,
+ * then the set's. Each level falls back on the next one down wherever the pack lacks a folder, an item's key or a frame.
  *   sprite/<mpq path without ext>@hf/<group>.<frame>.png   a menu PCX that a Hellfire archive supplies under Diablo's path
  *                                             (ui_art/heros: Hellfire adds the monk as frame 3, Diablo's new hero): Hellfire's
  *                                             art only, it never falls back to the plain path's (Diablo's) art.
@@ -145,6 +158,14 @@ struct SDL_Surface;
 struct SDL_Renderer;
 
 namespace devilution::hd {
+
+/** Which art heroes are drawn with (see "Hero art" at the top of this file); the values are those of the "Hero Art" option. */
+enum class HeroArt : uint8_t {
+	Original = 0,                ///< the 1997 sprites: no HD art for heroes
+	ScaledUp = 1,                ///< the weapon set's art: every item of a weapon class alike
+	UniqueWeapons = 2,           ///< each weapon's own (held art), then the set's
+	UniqueWeaponsAndShields = 3, ///< each weapon and shield pair's own, then the weapon's, then the set's
+};
 
 struct PixelProvenance {
 	uint32_t image;  ///< 1-based HD image id, 0 when the pixel was drawn by art without HD
@@ -349,11 +370,19 @@ public:
 	ItemGraphic &operator=(const ItemGraphic &) = delete;
 };
 
+/** One item in a hero's hands: its item graphic (Item::_iCurs; -1: none), and for a unique whose own art may show its index and name. */
+struct HeldPiece {
+	int cursorGraphic = -1;
+	int uniqueIndex = -1;
+	std::string_view uniqueName;
+};
+
 /**
  * While it lives, the sprite draws are those of the hero ``who`` (any address that stays the hero's: its Player) holding the item with the
  * item graphic ``cursorGraphic`` (Item::_iCurs; -1: nothing that has held art, a shield, or a pair): a hero frame ("sprite/plrgfx/...")
  * looks for that item's held art ("held <dir>" above) before the weapon set's. For a unique item whose own art may show, ``uniqueIndex``
- * and ``uniqueName`` as for ItemGraphic: its "c<NNN>~<slug>" art is looked for first.
+ * and ``uniqueName`` as for ItemGraphic: its "c<NNN>~<slug>" art is looked for first. With a ``shield`` too (the weapon may be none: a
+ * shield alone), the pair's art ("pairs <dir>" above) is looked for before all; which of them at all, the hero art level says (SetHeroArt).
  *
  * It also notes what the hero holds now: when that differs from what it held when last noted, every frame of the hero lets go of the held
  * art it drew (see "Memory" at the top of this file), whether or not it is drawn again. A hero's sprite files are kept while it swaps two
@@ -363,6 +392,7 @@ public:
 class HeldItem {
 public:
 	HeldItem(const void *who, int cursorGraphic, int uniqueIndex = -1, std::string_view uniqueName = {});
+	HeldItem(const void *who, HeldPiece weapon, HeldPiece shield);
 	~HeldItem();
 	HeldItem(const HeldItem &) = delete;
 	HeldItem &operator=(const HeldItem &) = delete;
@@ -371,16 +401,28 @@ public:
 /** The frames of the hero ``who`` let go of the held art they drew (as when it holds another item; see HeldItem). */
 void LetGoOfHeldArt(const void *who);
 
-/** The held art the hero ``who`` was last noted holding (HeldItem): "c057~doombringer", "c057", or nothing (the set's art). */
+/**
+ * The art the hero ``who`` was last noted holding (HeldItem), the most specific the pack has any of: "c057+c083" (a pair's),
+ * "c057~doombringer", "c057", or nothing (the set's art).
+ */
 std::string HeldArt(const void *who);
 
-/** The held-item folders the pack loaded (render.json read), and the sprite files (kits) they have art for. */
+/** The held-item and pair folders the pack loaded (render.json read), and the sprite files (kits) they have art for. */
 struct HeldUse {
 	uint32_t items = 0;
 	uint32_t kits = 0;
-	uint32_t frames = 0; ///< frames of the hero holding held art now (all heroes)
+	uint32_t frames = 0; ///< frames of the hero holding held or pair art now (all heroes)
+	uint32_t pairs = 0;
+	uint32_t pairKits = 0;
 };
 HeldUse Held();
+
+/**
+ * Sets which art heroes are drawn with (see "Hero art" at the top of this file). What heroes drew at the old level is let go of (loaded
+ * again when drawn again), and what they hold is looked up again at their next draw. Kept across packs; set before Init too.
+ */
+void SetHeroArt(HeroArt level);
+HeroArt GetHeroArt();
 
 /** The 8-bit surface the game renders into (the one to track). */
 void SetTarget(SDL_Surface *palSurface);

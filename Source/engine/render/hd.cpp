@@ -180,18 +180,23 @@ struct HeldKit {
 	uint8_t dirs = 0;    ///< the groups (a hero's directions) it has frames of, a bit each
 	uint16_t frames = 0; ///< frames in each
 };
-std::string HeldDir; ///< "held <dir>" in hd.txt (DEVILUTIONX_HD_HELD): <dir>/<key>/render.json and its frames; empty: none
-std::unordered_map<std::string, std::unordered_map<std::string, HeldKit>> HeldKits; ///< "c057", "c057~doombringer" -> sprite path -> its kit
-uint32_t HeldKitCount = 0;
+/** A folder of hero renders: "held <dir>" (one weapon each) or "pairs <dir>" (a weapon and a shield each, or a shield alone). */
+struct HeroArtFolder {
+	std::string prefix; ///< what the pack files of its frames start with: "held/", "pairs/"
+	std::string dir;    ///< <dir>/<key>/render.json and its frames; empty: none
+	std::unordered_map<std::string, std::unordered_map<std::string, HeldKit>> kits; ///< "c057", "c057~doombringer", "c057+c083" -> sprite path -> its kit
+	uint32_t kitCount = 0;
+};
+HeroArtFolder HeldFolder { "held/" };  ///< DEVILUTIONX_HD_HELD
+HeroArtFolder PairFolder { "pairs/" }; ///< DEVILUTIONX_HD_PAIRS
 std::string HeldPalette;     ///< the reference palette of held art whose weapon set's frame the pack lacks: that of the pack's hero art
 uint32_t HeldGeneration = 1; ///< changes whenever a pack is loaded
 size_t HeldImageCount = 0;   ///< images of held art: not in the manifest, so Images is kept that much larger than the manifest (ImageId)
-/** What one hero holds: the item's art and its picture's ("c057~doombringer", "c057"); the first may be empty. */
+/** What one hero holds: the folders its art may be in, most specific first ("pairs/c057+c083", "held/c057~doombringer", "held/c057"). */
 struct HeldChoice {
-	std::string unique;
-	std::string picture;
+	std::vector<std::string> folders;
 };
-std::unordered_map<std::string, HeldChoice> HeldChoices; ///< by "<picture>|<unique>", made once each (stable addresses)
+std::unordered_map<std::string, HeldChoice> HeldChoices; ///< by the folders joined with "|", made once each (stable addresses)
 /** What a hero (HeldItem's ``who``) holds, and its frames that hold held art for it. */
 struct HeroHeld {
 	const HeldChoice *choice = nullptr;
@@ -201,6 +206,13 @@ std::unordered_map<const void *, HeroHeld> HeldBy;
 thread_local const HeldChoice *HeldNow = nullptr; ///< while a HeldItem with held art lives
 thread_local HeroHeld *HeldHero = nullptr;
 thread_local const void *HeldWho = nullptr;
+std::atomic<HeroArt> HeroArtLevel { HeroArt::UniqueWeaponsAndShields }; ///< SetHeroArt; changed under ImagesMutex
+
+/** Whether ``file`` is a frame of a hero render folder ("held/...", "pairs/..."). */
+bool HeroArtFile(const std::string &file)
+{
+	return file.compare(0, 5, "held/") == 0 || file.compare(0, 6, "pairs/") == 0;
+}
 
 /** "shading pixel" in hd.txt: every pixel graded on its own, as before the shading was reworked (see the top of hd.hpp). */
 bool PixelShading = false;
@@ -446,16 +458,17 @@ void AddBytes(HdImage &img, size_t n)
 	for (size_t peak = PeakBytes; now > peak && !PeakBytes.compare_exchange_weak(peak, now);) { }
 }
 
-/** Where the pack file ``file`` is on disk: held art ("held/<key>/...") in HeldDir, the rest in the pack. */
+/** Where the pack file ``file`` is on disk: held art ("held/<key>/...") and pair art ("pairs/<key>/...") in their folders, the rest in the pack. */
 std::string PathOf(const std::string &file)
 {
-	if (file.compare(0, 5, "held/") == 0 && !HeldDir.empty()) return HeldDir + file.substr(4);
+	for (const HeroArtFolder *folder : { &HeldFolder, &PairFolder })
+		if (!folder->dir.empty() && file.compare(0, folder->prefix.size(), folder->prefix) == 0) return folder->dir + file.substr(folder->prefix.size() - 1);
 	return PackDir + "/" + file;
 }
 
 /**
- * Whether ``file`` is one of the pack's images, and the reference palette it was made against: the manifest's, or held art that a held
- * folder's render.json lists ("held/<key>/plrgfx/<path>/<group>.<frame>.png"), with the palette of the weapon set's frame it stands in for.
+ * Whether ``file`` is one of the pack's images, and the reference palette it was made against: the manifest's, or held (or pair) art that
+ * its folder's render.json lists ("held/<key>/plrgfx/<path>/<group>.<frame>.png"), with the palette of the weapon set's frame it stands in for.
  */
 bool PackImage(const std::string &file, std::string &palette)
 {
@@ -463,12 +476,16 @@ bool PackImage(const std::string &file, std::string &palette)
 		palette = entry->second;
 		return true;
 	}
-	if (HeldKits.empty() || file.compare(0, 5, "held/") != 0) return false;
-	const size_t keyEnd = file.find('/', 5);
+	const HeroArtFolder *folder = nullptr;
+	for (const HeroArtFolder *f : { &HeldFolder, &PairFolder })
+		if (!f->kits.empty() && file.compare(0, f->prefix.size(), f->prefix) == 0) folder = f;
+	if (folder == nullptr) return false;
+	const size_t keyAt = folder->prefix.size();
+	const size_t keyEnd = file.find('/', keyAt);
 	const size_t frameAt = file.rfind('/');
 	if (keyEnd == std::string::npos || frameAt <= keyEnd) return false;
-	const auto kits = HeldKits.find(file.substr(5, keyEnd - 5));
-	if (kits == HeldKits.end()) return false;
+	const auto kits = folder->kits.find(file.substr(keyAt, keyEnd - keyAt));
+	if (kits == folder->kits.end()) return false;
 	const auto kit = kits->second.find(file.substr(keyEnd + 1, frameAt - keyEnd - 1));
 	if (kit == kits->second.end()) return false;
 	unsigned group = 0, frame = 0;
@@ -607,7 +624,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 			const auto key = PaletteKeys.emplace(palette, static_cast<uint32_t>(PaletteKeys.size()));
 			img.palette = key.first->second;
 			PaletteCount = static_cast<uint32_t>(PaletteKeys.size());
-			const bool held = file.compare(0, 5, "held/") == 0; // a hero's art
+			const bool held = HeroArtFile(file); // a hero's art (held or pair)
 			for (const char *world : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/", "sprite/items/", "sprite/objects/", "sprite/missiles/", "sprite/levels/", "sprite/nlevels/", "tile/" })
 				img.world = img.world || held || file.rfind(world, 0) == 0;
 			for (const char *figure : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/" })
@@ -2040,29 +2057,46 @@ private:
 	}
 };
 
-/** Reads the held folders under HeldDir (see "held <dir>" in hd.hpp): each one's render.json, which says what frames it has. */
-void LoadHeld()
+/**
+ * Reads the folders under ``folder``'s dir (see "held <dir>" and "pairs <dir>" in hd.hpp): each one's render.json, which says what frames it
+ * has. ``line`` is its hd.txt line, ``override`` its environment variable (set: it wins, empty: none).
+ */
+void LoadHeroArt(HeroArtFolder &folder, std::string line, const char *override)
 {
-	if (HeldDir.empty()) return;
+	folder.dir.clear();
+	folder.kits.clear();
+	folder.kitCount = 0;
+	if (const char *dir = std::getenv(override); dir != nullptr) line = dir;
+	if (line.empty()) return;
+	folder.dir = line[0] == '/' || (line.size() > 1 && line[1] == ':') ? line : PackDir + "/" + line;
+	while (folder.dir.size() > 1 && (folder.dir.back() == '/' || folder.dir.back() == '\\'))
+		folder.dir.pop_back();
+	if (HeldPalette.empty()) {
+		for (const auto &[file, palette] : Manifest) {
+			if (file.compare(0, 14, "sprite/plrgfx/") != 0) continue;
+			HeldPalette = palette;
+			break;
+		}
+	}
 	uint32_t items = 0;
-	for (const std::string &key : ListDirectories(HeldDir.c_str())) {
+	for (const std::string &key : ListDirectories(folder.dir.c_str())) {
 		if (key.empty() || key[0] == '.' || key.find_first_of("/\\") != std::string::npos) continue;
-		std::ifstream in(HeldDir + "/" + key + "/render.json", std::ios::binary);
+		std::ifstream in(folder.dir + "/" + key + "/render.json", std::ios::binary);
 		if (!in) continue; // unfinished (the renderer writes render.json last)
 		const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
 		std::unordered_map<std::string, HeldKit> kits;
 		if (!HeldJson(text).Read(kits)) {
-			LogError("HD: can't read {}/{}/render.json", HeldDir, key);
+			LogError("HD: can't read {}/{}/render.json", folder.dir, key);
 			continue;
 		}
 		if (kits.empty()) continue;
 		for (const auto &[path, kit] : kits)
 			ArtStems.insert("sprite/" + path); // the game's sprites of that file are registered (RegisterSpriteList) even without art of the set's
-		HeldKitCount += static_cast<uint32_t>(kits.size());
-		HeldKits[key] = std::move(kits);
+		folder.kitCount += static_cast<uint32_t>(kits.size());
+		folder.kits[key] = std::move(kits);
 		++items;
 	}
-	LogInfo("HD: held art of {} items ({} sprite files) in {}", items, HeldKitCount, HeldDir);
+	LogInfo("HD: {} art of {} keys ({} sprite files) in {}", folder.prefix.substr(0, folder.prefix.size() - 1), items, folder.kitCount, folder.dir);
 }
 } // namespace
 
@@ -2078,6 +2112,7 @@ void Init()
 	}
 	std::string line;
 	std::string held;
+	std::string pairs;
 	FreeSilhouette = false;
 	PixelShading = false;
 	MonsterLights.clear();
@@ -2121,6 +2156,8 @@ void Init()
 			if (words >> tileset >> n && n > 0) (kind == "tileperiod" ? TilePeriods : TileHashes)[tileset] = n;
 		} else if (kind == "held") {
 			words >> held;
+		} else if (kind == "pairs") {
+			words >> pairs;
 		}
 	}
 	Scale = std::clamp(Scale, 1, 8);
@@ -2141,25 +2178,18 @@ void Init()
 	}
 	{
 		const std::lock_guard<std::mutex> lock(ImagesMutex);
-		HeldDir.clear();
-		HeldKits.clear();
-		HeldKitCount = 0;
+		HeldFolder.dir.clear();
+		HeldFolder.kits.clear();
+		HeldFolder.kitCount = 0;
+		PairFolder.dir.clear();
+		PairFolder.kits.clear();
+		PairFolder.kitCount = 0;
 		HeldBy.clear();
 		++HeldGeneration;
 	}
-	if (const char *dir = std::getenv("DEVILUTIONX_HD_HELD"); dir != nullptr) held = dir;
-	if (!held.empty()) {
-		HeldDir = held[0] == '/' || (held.size() > 1 && held[1] == ':') ? held : PackDir + "/" + held;
-		while (HeldDir.size() > 1 && (HeldDir.back() == '/' || HeldDir.back() == '\\'))
-			HeldDir.pop_back();
-		HeldPalette.clear();
-		for (const auto &[file, palette] : Manifest) {
-			if (file.compare(0, 14, "sprite/plrgfx/") != 0) continue;
-			HeldPalette = palette;
-			break;
-		}
-		LoadHeld();
-	}
+	HeldPalette.clear();
+	LoadHeroArt(HeldFolder, held, "DEVILUTIONX_HD_HELD");
+	LoadHeroArt(PairFolder, pairs, "DEVILUTIONX_HD_PAIRS");
 	if (const char *dump = std::getenv("DEVILUTIONX_HD_DUMP"); dump != nullptr) {
 		DumpDir = dump;
 		const char *every = std::getenv("DEVILUTIONX_HD_DUMP_EVERY");
@@ -2363,26 +2393,49 @@ ItemGraphic::~ItemGraphic()
 }
 
 HeldItem::HeldItem(const void *who, int cursorGraphic, int uniqueIndex, std::string_view uniqueName)
+    : HeldItem(who, HeldPiece { cursorGraphic, uniqueIndex, uniqueName }, HeldPiece {})
 {
-	if (!Active || who == nullptr || HeldKits.empty()) return;
-	std::string picture;
-	std::string unique;
-	if (cursorGraphic >= 0) {
+}
+
+HeldItem::HeldItem(const void *who, HeldPiece weapon, HeldPiece shield)
+{
+	if (!Active || who == nullptr || (HeldFolder.kits.empty() && PairFolder.kits.empty())) return;
+	// The names an item's art may be under, most specific first: its unique's own ("c057~doombringer"), its picture's ("c057")
+	const auto names = [](const HeldPiece &piece) {
+		std::vector<std::string> out;
+		if (piece.cursorGraphic < 0) return out;
 		char name[16];
-		std::snprintf(name, sizeof(name), "c%03d", cursorGraphic);
-		picture = name;
-		if (uniqueIndex >= 0 && !uniqueName.empty()) {
-			unique = picture + "~" + NameSlug(uniqueName);
-			if (HeldKits.count(unique) == 0) unique.clear();
+		std::snprintf(name, sizeof(name), "c%03d", piece.cursorGraphic);
+		if (piece.uniqueIndex >= 0 && !piece.uniqueName.empty()) out.push_back(std::string(name) + "~" + NameSlug(piece.uniqueName));
+		out.emplace_back(name);
+		return out;
+	};
+	const HeroArt level = HeroArtLevel.load();
+	const std::vector<std::string> weapons = names(weapon);
+	std::vector<std::string> folders; // where to look, most specific first; none: the set's art, as before
+	if (level >= HeroArt::UniqueWeaponsAndShields && shield.cursorGraphic >= 0 && !PairFolder.kits.empty()) {
+		const std::vector<std::string> shields = names(shield);
+		for (const std::string &w : weapons.empty() ? std::vector<std::string> { std::string() } : weapons) {
+			for (const std::string &s : shields) {
+				const std::string key = w.empty() ? s : w + "+" + s; // "c057+c083", or a shield alone's "c083"
+				if (PairFolder.kits.count(key) != 0) folders.push_back(PairFolder.prefix + key);
+			}
 		}
-		if (unique.empty() && HeldKits.count(picture) == 0) picture.clear(); // nothing of this item's own: the set's art, as before
+	}
+	// The weapon's own art: with a shield only where pairs are looked for (a weapon set with a shield is a set of its own; its art falls
+	// back on the weapon's only where the held art has frames of it)
+	if (level >= HeroArt::UniqueWeapons && (shield.cursorGraphic < 0 || level >= HeroArt::UniqueWeaponsAndShields)) {
+		for (const std::string &w : weapons)
+			if (HeldFolder.kits.count(w) != 0) folders.push_back(HeldFolder.prefix + w);
 	}
 	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const HeldChoice *choice = nullptr;
-	if (!picture.empty()) {
-		const std::string key = picture + "|" + unique;
+	if (!folders.empty()) {
+		std::string key;
+		for (const std::string &folder : folders)
+			key += (key.empty() ? "" : "|") + folder;
 		auto found = HeldChoices.find(key);
-		if (found == HeldChoices.end()) found = HeldChoices.emplace(key, HeldChoice { unique, picture }).first;
+		if (found == HeldChoices.end()) found = HeldChoices.emplace(key, HeldChoice { std::move(folders) }).first;
 		choice = &found->second;
 	}
 	HeroHeld &hero = HeldBy[who];
@@ -2414,19 +2467,44 @@ std::string HeldArt(const void *who)
 	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	const auto found = HeldBy.find(who);
 	if (found == HeldBy.end() || found->second.choice == nullptr) return {};
-	const HeldChoice &choice = *found->second.choice;
-	return choice.unique.empty() ? choice.picture : choice.unique;
+	const std::string &folder = found->second.choice->folders.front();
+	return folder.substr(folder.find('/') + 1);
 }
 
 HeldUse Held()
 {
 	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	HeldUse use;
-	use.items = static_cast<uint32_t>(HeldKits.size());
-	use.kits = HeldKitCount;
+	use.items = static_cast<uint32_t>(HeldFolder.kits.size());
+	use.kits = HeldFolder.kitCount;
+	use.pairs = static_cast<uint32_t>(PairFolder.kits.size());
+	use.pairKits = PairFolder.kitCount;
 	for (const auto &[key, entry] : Sprites)
 		use.frames += entry.heldImage != 0 && entry.heldGeneration == HeldGeneration ? 1 : 0; // (of this pack)
 	return use;
+}
+
+void SetHeroArt(HeroArt level)
+{
+	const std::lock_guard<std::mutex> lock(ImagesMutex);
+	if (HeroArtLevel.load() == level) return;
+	HeroArtLevel.store(level);
+	// What heroes drew at the old level is let go of (loaded again when drawn again), and what they hold is looked up again (HeldItem)
+	for (auto &[who, hero] : HeldBy)
+		LetGoOfHeld(who, hero);
+	++HeldGeneration;
+	if (level != HeroArt::Original) return;
+	for (auto &[key, entry] : Sprites) {
+		if (entry.stem.compare(0, 14, "sprite/plrgfx/") != 0) continue;
+		for (const uint32_t id : entry.images)
+			LetGo(id);
+		entry.images.clear();
+	}
+}
+
+HeroArt GetHeroArt()
+{
+	return HeroArtLevel.load();
 }
 
 void SetTarget(SDL_Surface *palSurface)
@@ -2540,10 +2618,12 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 	if (Active) {
 		const std::lock_guard<std::mutex> lock(ImagesMutex);
 		const auto found = Sprites.find(clx.pixelData());
-		if (found != Sprites.end() && found->second.check == Checksum(clx)) {
+		// (heroes at the hero art level Original: the 1997 sprite, as for a sprite without art)
+		if (found != Sprites.end() && found->second.check == Checksum(clx)
+		    && (HeroArtLevel.load(std::memory_order_relaxed) != HeroArt::Original || found->second.stem.compare(0, 14, "sprite/plrgfx/") != 0)) {
 			SpriteEntry &entry = found->second;
 			drawn = &entry;
-			// The most specific art the pack has: a hero's held item's (its unique's, its picture's), a unique item's own, a dropped item
+			// The most specific art the pack has: a hero's pair's or held item's (see HeldItem), a unique item's own, a dropped item
 			// graphic's own, the one monster's the draw's TRN belongs to, the draw's own swap on top of the sprite's (art that every monster
 			// with that TRN shares), the sprite's swap, itself
 			bool held = false;
@@ -2551,8 +2631,9 @@ SpriteScope::SpriteScope(const Surface &out, Point position, ClxSprite clx, cons
 				if (entry.heldFor != HeldNow || entry.heldWho != HeldWho || entry.heldGeneration != HeldGeneration) { // (looked up once for each frame and item)
 					LetGoOfHeld(entry);
 					const std::string path = entry.stem.substr(7) + entry.frame; // "plrgfx/warrior/wls/wlsas/0.3.png"
-					uint32_t art = HeldNow->unique.empty() ? 0 : ImageId("held/" + HeldNow->unique + "/" + path, clx.width(), clx.height());
-					if (art == 0) art = ImageId("held/" + HeldNow->picture + "/" + path, clx.width(), clx.height());
+					uint32_t art = 0;
+					for (size_t i = 0; i < HeldNow->folders.size() && art == 0; ++i)
+						art = ImageId(HeldNow->folders[i] + "/" + path, clx.width(), clx.height());
 					entry.heldFor = HeldNow;
 					entry.heldWho = HeldWho;
 					entry.heldGeneration = HeldGeneration;

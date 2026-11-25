@@ -23,6 +23,7 @@
 #include "levels/gendung.h"
 #include "monster.h"
 #include "msg.h"
+#include "options.h"
 #include "player.h"
 #include "tables/spelldat.h"
 #include "utils/log.hpp"
@@ -316,7 +317,18 @@ void AfterGameTick()
 	} else if (command.verb == "held") {
 		// held: logs the held art the HD layer has noted for the hero, and what it has loaded
 		const hd::HeldUse use = hd::Held();
-		LogInfo("HD showcase: held '{}' ({} items, {} sprite files, {} frames holding held art)", hd::HeldArt(MyPlayer), use.items, use.kits, use.frames);
+		LogInfo("HD showcase: held '{}' ({} items, {} sprite files; {} pairs, {} sprite files; {} frames holding held art)", hd::HeldArt(MyPlayer), use.items, use.kits,
+		    use.pairs, use.pairKits, use.frames);
+	} else if (command.verb == "heroart" && !command.args.empty()) {
+		// heroart <level>: the Hero Art option, as the settings menu sets it (Original, ScaledUp, UniqueWeapons, UniqueWeaponsAndShields or 0-3)
+		const std::optional<HeroArt> level = OptionEntryHeroArt::Parse(command.args[0]);
+		if (!level.has_value()) {
+			LogError("HD showcase: no hero art level '{}'", command.args[0]);
+			diablo_quit(1);
+			return;
+		}
+		GetOptions().Graphics.heroArt.SetValue(*level);
+		LogInfo("HD showcase: hero art {} (hd level {})", OptionEntryHeroArt::IniName(*level), static_cast<int>(hd::GetHeroArt()));
 	} else if (command.verb == "inv") {
 		invflag = true;
 	} else if (command.verb == "mouse" && command.args.size() >= 2) {

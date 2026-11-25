@@ -6,6 +6,7 @@
 #include "options.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -371,6 +372,60 @@ void OptionEntryEnumBase::SetActiveListIndex(size_t index)
 {
 	this->value = entryValues[index];
 	this->NotifyValueChanged();
+}
+
+namespace {
+/** The hero art levels by their ini names (OptionEntryHeroArt). */
+constexpr std::pair<HeroArt, std::string_view> HeroArtIniNames[] = {
+	{ HeroArt::Original, "Original" },
+	{ HeroArt::ScaledUp, "ScaledUp" },
+	{ HeroArt::UniqueWeapons, "UniqueWeapons" },
+	{ HeroArt::UniqueWeaponsAndShields, "UniqueWeaponsAndShields" },
+};
+} // namespace
+
+OptionEntryHeroArt::OptionEntryHeroArt()
+    : OptionEntryEnum("Hero Art", OptionEntryFlags::None, N_("Hero Art"),
+          N_("Which art an HD pack draws heroes with: the original sprites, the scaled up art every weapon of a kind shares, each unique weapon's own, or each weapon and shield's own. Where the pack has none, the one before it."),
+          HeroArt::UniqueWeaponsAndShields,
+          {
+              { HeroArt::Original, N_("Original") },
+              { HeroArt::ScaledUp, N_("Scaled up") },
+              { HeroArt::UniqueWeapons, N_("Unique Weapons") },
+              { HeroArt::UniqueWeaponsAndShields, N_("Unique Weapons and Shields") },
+          })
+{
+}
+std::optional<HeroArt> OptionEntryHeroArt::Parse(std::string_view text)
+{
+	// Letters and digits only, in lower case: "Unique Weapons and Shields" (the menu's name) reads as "UniqueWeaponsAndShields"
+	std::string word;
+	for (const char c : text) {
+		if (std::isalnum(static_cast<unsigned char>(c)) != 0) word += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	for (const auto &[level, name] : HeroArtIniNames) {
+		std::string lower;
+		for (const char c : name)
+			lower += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+		if (word == lower || word == std::to_string(static_cast<int>(level))) return level;
+	}
+	return std::nullopt;
+}
+std::string_view OptionEntryHeroArt::IniName(HeroArt level)
+{
+	for (const auto &[value, name] : HeroArtIniNames) {
+		if (value == level) return name;
+	}
+	return HeroArtIniNames[std::size(HeroArtIniNames) - 1].second;
+}
+void OptionEntryHeroArt::LoadFromIni(std::string_view category)
+{
+	const std::optional<HeroArt> level = Parse(ini->getString(category, key));
+	if (level.has_value()) SetValue(*level);
+}
+void OptionEntryHeroArt::SaveToIni(std::string_view category) const
+{
+	ini->set(category, key, IniName(**this));
 }
 
 void OptionEntryIntBase::LoadFromIni(std::string_view category)
@@ -801,6 +856,7 @@ GraphicsOptions::GraphicsOptions()
     , perPixelLighting("Per-pixel Lighting", OptionEntryFlags::None, N_("Per-pixel Lighting"), N_("Subtile lighting for smoother light gradients."), DEFAULT_PER_PIXEL_LIGHTING)
     , colorCycling("Color Cycling", OptionEntryFlags::None, N_("Color Cycling"), N_("Color cycling effect used for water, lava, and acid animation."), true)
     , alternateNestArt("Alternate nest art", OptionEntryFlags::OnlyHellfire | OptionEntryFlags::CantChangeInGame, N_("Alternate nest art"), N_("The game will use an alternative palette for Hellfire’s nest tileset."), false)
+    , heroArt()
 #if SDL_VERSION_ATLEAST(2, 0, 0)
     , hardwareCursor("Hardware Cursor", OptionEntryFlags::CantChangeInGame | OptionEntryFlags::RecreateUI | (HardwareCursorSupported() ? OptionEntryFlags::None : OptionEntryFlags::Invisible), N_("Hardware Cursor"), N_("Use a hardware cursor"), HardwareCursorDefault())
     , hardwareCursorForItems("Hardware Cursor For Items", OptionEntryFlags::CantChangeInGame | (HardwareCursorSupported() ? OptionEntryFlags::None : OptionEntryFlags::Invisible), N_("Hardware Cursor For Items"), N_("Use a hardware cursor for items."), false)
@@ -832,6 +888,7 @@ std::vector<OptionEntryBase *> GraphicsOptions::GetEntries()
 		&perPixelLighting,
 		&colorCycling,
 		&alternateNestArt,
+		&heroArt,
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 		&hardwareCursor,
 		&hardwareCursorForItems,

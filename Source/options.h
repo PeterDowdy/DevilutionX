@@ -81,6 +81,18 @@ enum class FrameRateControl : uint8_t {
 	CPUSleep = 2,
 };
 
+/** @brief Which art an HD pack draws heroes with (engine/render/hd.hpp, hd::HeroArt): where the pack lacks one, the one before it. */
+enum class HeroArt : uint8_t {
+	/** @brief The 1997 sprites. */
+	Original = 0,
+	/** @brief The pack's art of each weapon set: every item of a weapon class alike. */
+	ScaledUp = 1,
+	/** @brief Each weapon's own art. */
+	UniqueWeapons = 2,
+	/** @brief Each weapon and shield pair's own art. */
+	UniqueWeaponsAndShields = 3,
+};
+
 enum class Resampler : uint8_t {
 #ifdef DEVILUTIONX_RESAMPLER_SPEEX
 	Speex = 0,
@@ -255,6 +267,18 @@ public:
 	{
 		SetValueInternal(static_cast<int>(value));
 	}
+};
+
+/** @brief The hero art option: kept in the ini by name ("UniqueWeaponsAndShields"); a number, or the name as the menu shows it, reads too. */
+class OptionEntryHeroArt : public OptionEntryEnum<HeroArt> {
+public:
+	OptionEntryHeroArt();
+	void LoadFromIni(std::string_view category) override;
+	void SaveToIni(std::string_view category) const override;
+	/** @brief The level the ini text ``text`` names (see LoadFromIni), if any. */
+	static std::optional<HeroArt> Parse(std::string_view text);
+	/** @brief The ini name of ``level``. */
+	static std::string_view IniName(HeroArt level);
 };
 
 class OptionEntryIntBase : public OptionEntryListBase {
@@ -553,6 +577,8 @@ struct GraphicsOptions : OptionCategoryBase {
 	OptionEntryBoolean colorCycling;
 	/** @brief Use alternate nest palette. */
 	OptionEntryBoolean alternateNestArt;
+	/** @brief Which art an HD pack draws heroes with. */
+	OptionEntryHeroArt heroArt;
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 	/** @brief Use a hardware cursor (SDL2 only). */
 	OptionEntryBoolean hardwareCursor;
