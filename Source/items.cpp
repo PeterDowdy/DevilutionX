@@ -2428,24 +2428,47 @@ hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped)
 	return hd::ItemGraphic(item._iCurs, dropped, -1, {});
 }
 
+namespace {
+
+/** The HD layer's name for an item in a hero's hands: a unique item's own art as for its picture (HdItemGraphic), once identified or always for one with a picture of its own. */
+hd::HeldPiece HdHeldPiece(const Item *item)
+{
+	if (item == nullptr) return {};
+	if (item->_iMagical == ITEM_QUALITY_UNIQUE && item->_iUid >= 0 && static_cast<size_t>(item->_iUid) < UniqueItems.size()) {
+		const UniqueItem &unique = UniqueItems[item->_iUid];
+		if (item->_iIdentified || unique.UICurs != ICURS_DEFAULT)
+			return { item->_iCurs, item->_iUid, unique.UIName };
+	}
+	return { item->_iCurs, -1, {} };
+}
+
+void OptionHeroArtChanged()
+{
+	hd::SetHeroArt(static_cast<hd::HeroArt>(*GetOptions().Graphics.heroArt));
+}
+
+const auto OptionChangeHandlerHeroArt = (GetOptions().Graphics.heroArt.SetValueChangedCallback(OptionHeroArtChanged), true);
+
+} // namespace
+
 hd::HeldItem HdHeldItem(const Player &player)
 {
-	// The one weapon in the hero's hands (a two-handed one included): a shield in either hand keeps the weapon set's art, as do two weapons
+	// The hands as the game draws them (GetPlrAnimWeaponId): the one weapon (a two-handed one included) and a shield; two weapons keep the
+	// weapon set's art
 	const Item *weapon = nullptr;
+	const Item *shield = nullptr;
 	for (const Item *hand : { &player.InvBody[INVLOC_HAND_LEFT], &player.InvBody[INVLOC_HAND_RIGHT] }) {
 		if (hand->isEmpty()) continue;
-		if (hand->_itype == ItemType::Shield || weapon != nullptr) return hd::HeldItem(&player, -1);
+		if (hand->_itype == ItemType::Shield) {
+			shield = hand;
+			continue;
+		}
+		if (weapon != nullptr) return hd::HeldItem(&player, -1);
 		weapon = hand;
 	}
-	// (a weapon the hero can't use is drawn with the unarmed set, GetPlrAnimWeaponId)
-	if (weapon == nullptr || !weapon->isWeapon() || !player.CanUseItem(*weapon)) return hd::HeldItem(&player, -1);
-	// A unique item's own art as for its picture (HdItemGraphic): once identified, or always for one with a picture of its own
-	if (weapon->_iMagical == ITEM_QUALITY_UNIQUE && weapon->_iUid >= 0 && static_cast<size_t>(weapon->_iUid) < UniqueItems.size()) {
-		const UniqueItem &unique = UniqueItems[weapon->_iUid];
-		if (weapon->_iIdentified || unique.UICurs != ICURS_DEFAULT)
-			return hd::HeldItem(&player, weapon->_iCurs, weapon->_iUid, unique.UIName);
-	}
-	return hd::HeldItem(&player, weapon->_iCurs);
+	// (a weapon the hero can't use is drawn with the unarmed set, or the unarmed set with a shield)
+	if (weapon != nullptr && (!weapon->isWeapon() || !player.CanUseItem(*weapon))) weapon = nullptr;
+	return hd::HeldItem(&player, HdHeldPiece(weapon), HdHeldPiece(shield));
 }
 
 void ClearUniqueItemFlags()

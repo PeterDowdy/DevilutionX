@@ -2010,6 +2010,274 @@ TEST(HdTest, HeldArtIsLetGoOfWhenTheHeroHoldsAnotherItem)
 	EXPECT_EQ(hd::Held().frames, 0U);
 }
 
+/** The colour of the dumped frame ``frame`` (``width`` pixels a row) at ``x``, ``y``. */
+SDL_Color FrameColor(const std::vector<uint32_t> &frame, int width, int x, int y)
+{
+	const uint32_t argb = frame.at(static_cast<size_t>(y) * width + x);
+	return { static_cast<uint8_t>(argb >> 16), static_cast<uint8_t>(argb >> 8), static_cast<uint8_t>(argb), 255 };
+}
+
+TEST(HdTest, EachHeroArtLevelDrawsItsArtAndFallsBackOnTheOnesBelow)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_hero_art";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	// (animations no other test draws: the layer keeps what it looked up by file name for the life of the process)
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\nheld held\npairs pairs\n";
+		WriteArt(pack, "sprite/plrgfx/warrior/wld/wldqm/0.0.png", { 120, 60, 60 }, index); // what every sword and shield shares
+		WriteArt(pack, "sprite/plrgfx/warrior/wlu/wluqm/0.0.png", { 90, 120, 90 }, index); // what every shield alone shares
+		WriteArt(pack, "sprite/plrgfx/warrior/wls/wlsqm/0.0.png", { 130, 70, 40 }, index); // what every sword alone shares
+		WriteArt(pack, "sprite/monsters/zombie/zombieh/0.0.png", { 90, 90, 90 }, index);
+	}
+	// The Bastard Sword's held art: a warrior's with the sword alone, and (as a fallback for pairs) a rogue's with a shield
+	WriteHeldJson(pack / "held/c057", { { "plrgfx/warrior/wls/wlsqm", 1 }, { "plrgfx/rogue/rld/rldqm", 1 } });
+	WritePicture(pack / "held/c057/plrgfx/warrior/wls/wlsqm/0.0.png", { 60, 120, 60 });
+	WritePicture(pack / "held/c057/plrgfx/rogue/rld/rldqm/0.0.png", { 150, 150, 150 });
+	const auto pair = [&](const std::string &key, const std::string &kit, SDL_Color c) {
+		WriteHeldJson(pack / "pairs" / key, { { "plrgfx/warrior/" + kit, 1 } });
+		WritePicture(pack / "pairs" / key / "plrgfx/warrior" / kit / "0.0.png", c);
+	};
+	pair("c057+c083", "wld/wldqm", { 60, 200, 200 });                // the Bastard Sword with a Buckler
+	pair("c057~doombringer+c083", "wld/wldqm", { 200, 200, 60 });     // Doombringer with a Buckler
+	pair("c057+c083~the-deflector", "wld/wldqm", { 60, 60, 200 });    // the Bastard Sword with The Deflector
+	pair("c083", "wlu/wluqm", { 200, 120, 60 });                     // a Buckler alone
+	unsetenv("DEVILUTIONX_HD_HELD");
+	unsetenv("DEVILUTIONX_HD_PAIRS");
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	EXPECT_EQ(hd::GetHeroArt(), hd::HeroArt::UniqueWeaponsAndShields) << "the default";
+	EXPECT_EQ(hd::Held().items, 1U);
+	EXPECT_EQ(hd::Held().pairs, 4U);
+	EXPECT_EQ(hd::Held().pairKits, 4U);
+
+	constexpr int Heroes = 10;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, Heroes * 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+
+	const hd::HeldPiece sword { 57 };
+	const hd::HeldPiece doombringer { 57, 3, "Doombringer" };
+	const hd::HeldPiece buckler { 83 };
+	const hd::HeldPiece deflector { 83, 7, "The Deflector" };
+	const hd::HeldPiece largeShield { 105 };
+	const hd::HeldPiece none {};
+	struct Hero {
+		const char *file;
+		hd::HeldPiece weapon;
+		hd::HeldPiece shield;
+	};
+	const Hero heroes[Heroes] = {
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", sword, buckler },
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", doombringer, buckler },
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", sword, deflector },
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", doombringer, deflector }, // no pair of both uniques: the weapon's unique first
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", sword, largeShield },     // no pair art at all
+		{ "PlrGFX\\Warrior\\WLU\\WLUQM.CL2", none, buckler },          // a shield alone
+		{ "PlrGFX\\Warrior\\WLS\\WLSQM.CL2", sword, none },            // a sword alone
+		{ "PlrGFX\\Rogue\\RLD\\RLDQM.CL2", sword, buckler },           // a pair without the rogue's kit: the weapon's held art
+		{ "Monsters\\Zombie\\ZombieH.CL2", sword, buckler },           // not a hero
+		{ "PlrGFX\\Warrior\\WLD\\WLDQM.CL2", none, none },             // nothing noted
+	};
+	std::vector<std::vector<uint8_t>> sprites(Heroes, Sprite());
+	for (int i = 0; i < Heroes; ++i)
+		hd::RegisterSpriteList(heroes[i].file, 0, ClxSpriteList { sprites[i].data() });
+	const auto frame = [&](hd::HeroArt level, const std::string &name) {
+		hd::SetHeroArt(level);
+		const Surface out(pal);
+		hd::ForgetView(out);
+		for (int i = 0; i < Heroes; ++i) {
+			const hd::HeldItem held(&sprites[i], heroes[i].weapon, heroes[i].shield);
+			ClxDraw(out, { i * 8, 3 }, ClxSpriteList { sprites[i].data() }[0]);
+		}
+		hd::RequestDump(name);
+		hd::Present(nullptr, pal);
+		return DumpedFrame(dump, name);
+	};
+	const int width = Heroes * 16;
+
+	const std::vector<uint32_t> shields = frame(hd::HeroArt::UniqueWeaponsAndShields, "shields");
+	ASSERT_FALSE(shields.empty());
+	EXPECT_EQ(hd::HeldArt(&sprites[0]), "c057+c083");
+	EXPECT_EQ(hd::HeldArt(&sprites[3]), "c057~doombringer+c083");
+	EXPECT_EQ(hd::HeldArt(&sprites[4]), "c057") << "the most specific the pack has any of";
+	EXPECT_EQ(hd::HeldArt(&sprites[5]), "c083");
+	EXPECT_EQ(hd::HeldArt(&sprites[9]), "");
+	const auto expect = [&](const std::vector<uint32_t> &shown, int hero, int r, int g, int b, const std::string &what) {
+		ExpectColor(FrameColor(shown, width, hero * 16 + 2, 2), r, g, b, what.c_str());
+	};
+	expect(shields, 0, 60, 200, 200, "shields: sword and buckler: the pair's art");
+	expect(shields, 1, 200, 200, 60, "shields: Doombringer and buckler: the pair with the unique's name");
+	expect(shields, 2, 60, 60, 200, "shields: sword and The Deflector: the pair with the unique shield's name");
+	expect(shields, 3, 200, 200, 60, "shields: Doombringer and The Deflector: the weapon's unique first");
+	expect(shields, 4, 120, 60, 60, "shields: no pair art: the set's (the sword's held art has no frames of the set)");
+	expect(shields, 5, 200, 120, 60, "shields: a buckler alone: its own art");
+	expect(shields, 6, 60, 120, 60, "shields: a sword alone: its held art");
+	expect(shields, 7, 150, 150, 150, "shields: the pair lacks the rogue's frames: the sword's held art");
+	expect(shields, 8, 90, 90, 90, "shields: a monster: its own art");
+	expect(shields, 9, 120, 60, 60, "shields: nothing noted: the set's art");
+
+	const std::vector<uint32_t> weapons = frame(hd::HeroArt::UniqueWeapons, "weapons");
+	EXPECT_EQ(hd::HeldArt(&sprites[0]), "");
+	EXPECT_EQ(hd::HeldArt(&sprites[6]), "c057");
+	for (int hero : { 0, 1, 2, 3, 4 })
+		expect(weapons, hero, 120, 60, 60, "weapons: with a shield: the set's art (" + std::to_string(hero) + ")");
+	expect(weapons, 5, 90, 120, 90, "weapons: a buckler alone: the set's art");
+	expect(weapons, 6, 60, 120, 60, "weapons: a sword alone: its held art");
+	expect(weapons, 7, 200, 50, 50, "weapons: the rogue with a shield: the set's, which has no art");
+	expect(weapons, 8, 90, 90, 90, "weapons: a monster: its own art");
+
+	const std::vector<uint32_t> scaled = frame(hd::HeroArt::ScaledUp, "scaled");
+	EXPECT_EQ(hd::HeldArt(&sprites[6]), "");
+	for (int hero : { 0, 1, 2, 3, 4, 9 })
+		expect(scaled, hero, 120, 60, 60, "scaled up: the set's art (" + std::to_string(hero) + ")");
+	expect(scaled, 5, 90, 120, 90, "scaled up: a buckler alone: the set's art");
+	expect(scaled, 6, 130, 70, 40, "scaled up: a sword alone: the set's art");
+	expect(scaled, 8, 90, 90, 90, "scaled up: a monster: its own art");
+
+	const std::vector<uint32_t> original = frame(hd::HeroArt::Original, "original");
+	for (int hero : { 0, 1, 2, 3, 4, 5, 6, 7, 9 })
+		expect(original, hero, 200, 50, 50, "original: the 1997 sprite (" + std::to_string(hero) + ")");
+	expect(original, 8, 90, 90, 90, "original: a monster keeps its art");
+
+	EXPECT_TRUE(frame(hd::HeroArt::UniqueWeaponsAndShields, "shields-again") == shields);
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, WithoutAPairsFolderHeroesWithAShieldDrawAsBefore)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_pairs_none";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\nheld held\n"; // no "pairs" line: the folder below is not read
+		WriteArt(pack, "sprite/plrgfx/warrior/wld/wldlm/0.0.png", { 120, 60, 60 }, index);
+		WriteArt(pack, "sprite/plrgfx/warrior/wls/wlslm/0.0.png", { 130, 70, 40 }, index);
+	}
+	WriteHeldJson(pack / "held/c057", { { "plrgfx/warrior/wls/wlslm", 1 } });
+	WritePicture(pack / "held/c057/plrgfx/warrior/wls/wlslm/0.0.png", { 60, 120, 60 });
+	WriteHeldJson(pack / "pairs/c057+c083", { { "plrgfx/warrior/wld/wldlm", 1 } });
+	WritePicture(pack / "pairs/c057+c083/plrgfx/warrior/wld/wldlm/0.0.png", { 60, 200, 200 });
+	unsetenv("DEVILUTIONX_HD_HELD");
+	unsetenv("DEVILUTIONX_HD_PAIRS");
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+	hd::Init();
+	EXPECT_EQ(hd::Held().items, 1U);
+	EXPECT_EQ(hd::Held().pairs, 0U);
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 16, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	std::vector<uint8_t> withShield = Sprite();
+	std::vector<uint8_t> swordAlone = Sprite();
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLD\\WLDLM.CL2", 0, ClxSpriteList { withShield.data() });
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLS\\WLSLM.CL2", 0, ClxSpriteList { swordAlone.data() });
+	const Surface out(pal);
+	{
+		const hd::HeldItem held(withShield.data(), hd::HeldPiece { 57 }, hd::HeldPiece { 83 });
+		ClxDraw(out, { 0, 3 }, ClxSpriteList { withShield.data() }[0]);
+	}
+	{
+		const hd::HeldItem held(swordAlone.data(), hd::HeldPiece { 57 }, hd::HeldPiece {});
+		ClxDraw(out, { 8, 3 }, ClxSpriteList { swordAlone.data() }[0]);
+	}
+	hd::RequestDump("frame");
+	hd::Present(nullptr, pal);
+	const std::vector<uint32_t> shown = DumpedFrame(dump, "frame");
+	ASSERT_FALSE(shown.empty());
+	ExpectColor(FrameColor(shown, 32, 2, 2), 120, 60, 60, "a sword and shield: the set's art");
+	ExpectColor(FrameColor(shown, 32, 18, 2), 60, 120, 60, "a sword alone: its held art");
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, ChangingTheHeroArtLetsGoOfWhatHeroesDrewAndLooksItUpAgain)
+{
+	const HeldPack pack("hero_art_switch"); // a weapon set's stand and attack art (wls), two swords' held art elsewhere
+	// Pair art in a folder of its own (DEVILUTIONX_HD_PAIRS), for the sword-and-shield set's stand
+	const fs::path pairs = pack.pack / "pairs-elsewhere";
+	WriteHeldJson(pairs / "c060+c083", { { "plrgfx/warrior/wld/wldwl", 1 } });
+	HeldPack::Write(pairs / "c060+c083/plrgfx/warrior/wld/wldwl/0.0.png", 200);
+	{
+		std::ofstream index(pack.pack / "hd.txt", std::ios::app);
+		index << "image sprite/plrgfx/warrior/wld/wldwl/0.0.png palettes/test.pal\n";
+	}
+	HeldPack::Write(pack.pack / "sprite/plrgfx/warrior/wld/wldwl/0.0.png", 30);
+	setenv("DEVILUTIONX_HD_PAIRS", pairs.string().c_str(), 1);
+	hd::Init();
+	hd::SetTarget(pack.pal);
+	ASSERT_EQ(hd::Held().pairs, 1U);
+	const std::string pairArt = "pairs/c060+c083/plrgfx/warrior/wld/wldwl/0.0.png";
+	const std::string setArt = "sprite/plrgfx/warrior/wld/wldwl/0.0.png";
+	const int hero = 0;
+	std::optional<OwnedClxSpriteList> stand = Owned(Sprite());
+	hd::RegisterSpriteList("PlrGFX\\Warrior\\WLD\\WLDWL.CL2", 0, *stand);
+	const auto frame = [&](const std::string &name) {
+		const Surface out(pack.pal);
+		hd::ForgetView(out);
+		{
+			const hd::HeldItem held(&hero, hd::HeldPiece { 60 }, hd::HeldPiece { 83 });
+			ClxDraw(out, { 0, 3 }, (*stand)[0]);
+		}
+		hd::RequestDump(name);
+		hd::Present(nullptr, pack.pal);
+		return DumpedFrame(pack.dump, name);
+	};
+
+	const std::vector<uint32_t> first = frame("pair");
+	ASSERT_FALSE(first.empty());
+	EXPECT_TRUE(hd::Loaded(pairArt));
+	EXPECT_EQ(hd::Held().frames, 1U);
+
+	// Scaled up: the pair's art is let go of at once, the set's drawn
+	hd::SetHeroArt(hd::HeroArt::ScaledUp);
+	EXPECT_EQ(hd::Held().frames, 0U) << "let go of at once";
+	const std::vector<uint32_t> scaled = frame("scaled");
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(pairArt));
+	EXPECT_TRUE(hd::Loaded(setArt));
+	EXPECT_TRUE(scaled != first);
+
+	// Original: the set's art is let go of too, the 1997 sprite drawn
+	hd::SetHeroArt(hd::HeroArt::Original);
+	const std::vector<uint32_t> original = frame("original");
+	pack.EmptyFrames(20);
+	EXPECT_FALSE(hd::Loaded(setArt));
+	EXPECT_TRUE(original != scaled);
+	EXPECT_TRUE(original != first);
+
+	// Back to the default: both are looked up and loaded again, and draw exactly as before
+	hd::SetHeroArt(hd::HeroArt::UniqueWeaponsAndShields);
+	const std::vector<uint32_t> again = frame("again");
+	EXPECT_TRUE(again == first);
+	EXPECT_TRUE(hd::Loaded(pairArt));
+	hd::SetHeroArt(hd::HeroArt::ScaledUp);
+	EXPECT_TRUE(frame("scaled-again") == scaled);
+	hd::SetHeroArt(hd::HeroArt::UniqueWeaponsAndShields);
+	unsetenv("DEVILUTIONX_HD_PAIRS");
+}
+
 TEST(HdTest, TileVariantFileNamesArtByPosition)
 {
 	EXPECT_EQ(hd::TileVariantFile("l1", 5, { 18, 23 }, 4, 0), "tile/l1/5@2-3.png");
