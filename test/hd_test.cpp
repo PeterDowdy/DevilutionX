@@ -21,6 +21,7 @@
 #include "engine/clx_sprite.hpp"
 #include "engine/render/clx_render.hpp"
 #include "engine/surface.hpp"
+#include "utils/palette_blending.hpp"
 #include "utils/png.h"
 
 namespace devilution {
@@ -2157,6 +2158,179 @@ TEST(HdTest, ColoursTheLevelAnimatesStayOutOfAPillarsLightLevel)
 	ExpectColor(At(frame, 8, 16), other.r, other.g, other.b, "Other: as shading pixel draws it");
 	ExpectColor(At(frame, 8, 8), own.r, own.g, own.b, "Own: as shading pixel draws it");
 	ExpectColor(At(frame, 22, 9), own.r, own.g, own.b, "Own, the last pixel: as shading pixel draws it");
+	SDL_FreeSurface(frame);
+}
+
+// See-through draws (hd.hpp, "See-through"): paletteTransparencyLookup gives the pair the index Blend, a colour of neither
+constexpr uint8_t Blend = 99;
+constexpr SDL_Color BlendColor = { 150, 75, 75, 255 };
+
+/** A CLX list of one 4x4 sprite, every pixel ``index``. */
+std::vector<uint8_t> SpriteOf(uint8_t index)
+{
+	std::vector<uint8_t> data = { 1, 0, 0, 0, 12, 0, 0, 0, 38, 0, 0, 0, 6, 0, 4, 0, 4, 0 };
+	for (int row = 0; row < 4; ++row)
+		data.insert(data.end(), { 0xFC, index, index, index, index });
+	return data;
+}
+
+/**
+ * Draws a sprite of Other with the art BackArt at lo pixels (4..7, 1..4), and over it, blended, a sprite of Own with the art FrontArt: through
+ * ``light`` (one of the game's light tables: ClxDrawBlendedTRN), or plainly (ClxDrawBlended). paletteTransparencyLookup gives Blend for the
+ * pair. Returns the HD frame (scale 2); the PalSurface comes back in ``palOut``.
+ */
+SDL_Surface *DrawBlendedSprites(const std::string &name, const uint8_t *light, int width, SDL_Surface **palOut)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	std::array<SDL_Color, 256> colors = ShadingPalette();
+	colors[Blend] = BlendColor;
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteArt(pack, "sprite/" + name + "/back/0.0.png", BackArt, index);
+		WriteArt(pack, "sprite/" + name + "/front/0.0.png", FrontArt, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	EXPECT_TRUE(hd::Enabled());
+	hd::SetLightTables(light, light != nullptr ? 256 : 0);
+	const uint8_t front = light != nullptr ? light[Own] : Own;
+	const uint8_t saved[2] = { paletteTransparencyLookup[Other][front], paletteTransparencyLookup[front][Other] };
+	paletteTransparencyLookup[Other][front] = paletteTransparencyLookup[front][Other] = Blend;
+
+	// Not the size of any other test's surface, so that the provenance plane starts clean
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, width, 9, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+	static std::vector<uint8_t> back, over;
+	back = SpriteOf(Other);
+	over = SpriteOf(Own);
+	hd::RegisterSpriteList(name + "\\Back.CL2", 0, ClxSpriteList { back.data() });
+	hd::RegisterSpriteList(name + "\\Front.CL2", 0, ClxSpriteList { over.data() });
+	ClxDraw(out, { 4, 4 }, ClxSpriteList { back.data() }[0]);
+	if (light != nullptr)
+		ClxDrawBlendedTRN(out, { 4, 4 }, ClxSpriteList { over.data() }[0], light);
+	else
+		ClxDrawBlended(out, { 4, 4 }, ClxSpriteList { over.data() }[0]);
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	paletteTransparencyLookup[Other][front] = saved[0];
+	paletteTransparencyLookup[front][Other] = saved[1];
+	hd::SetLightTables(nullptr, 0);
+	fs::remove_all(pack);
+	*palOut = pal;
+	return frame;
+}
+
+TEST(HdTest, ABlendedSpriteIsDrawnHalfOverWhatIsBehindItInTrueColour)
+{
+	// The game writes Blend, the palette colour nearest the mean of the two. The layer used to grade the front art by the pair (Own, Blend):
+	// times 0.75, 1.5, 1.5 per channel, so art of colours of its own came out tinted (yellow and purple specks on see-through walls), and drawn
+	// whole, the sprite behind gone. Now: the front art as the same draw opaque grades it, half over the art behind
+	SDL_Surface *pal = nullptr;
+	SDL_Surface *frame = DrawBlendedSprites("blendplain", nullptr, 30, &pal);
+	ASSERT_NE(frame, nullptr);
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[2 * pal->pitch + 5], Blend) << "the game's own picture is as it was";
+	const SDL_Color half = { static_cast<uint8_t>((FrontArt.r + BackArt.r) / 2), static_cast<uint8_t>((FrontArt.g + BackArt.g) / 2), static_cast<uint8_t>((FrontArt.b + BackArt.b) / 2), 255 };
+	ExpectColor(At(frame, 8, 2), half.r, half.g, half.b, "half the front art over the back art");
+	ExpectColor(At(frame, 15, 9), half.r, half.g, half.b, "half the front art over the back art, the last pixel");
+	ExpectColor(At(frame, 7, 2), Background.r, Background.g, Background.b, "beside the sprites");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+
+	// Through a light table that draws Own at half (OwnLit): the front art is graded by the lit index, as the opaque draw would be
+	std::array<uint8_t, 256> light = Identity();
+	light[Own] = OwnLit;
+	frame = DrawBlendedSprites("blendlit", light.data(), 34, &pal);
+	ASSERT_NE(frame, nullptr);
+	EXPECT_EQ(static_cast<uint8_t *>(pal->pixels)[2 * pal->pitch + 5], Blend) << "the game's own picture is as it was";
+	ExpectColor(At(frame, 8, 2), (FrontArt.r / 2 + BackArt.r) / 2, (FrontArt.g / 2 + BackArt.g) / 2, (FrontArt.b / 2 + BackArt.b) / 2,
+	    "the front art at half light, half over the back art");
+	SDL_FreeSurface(frame);
+	SDL_FreeSurface(pal);
+}
+
+/**
+ * Draws pillar 7 of tileset "t" lit at level 0 (art FrontArt) as dun_render draws a see-through wall when ``blended``: eight pixels of Own
+ * drawn opaque at (4..11, 4), and eight blended at (4..11, 8) over the background, written as Blend. Without ``blended`` the second row is
+ * marked as an opaque draw writing Blend (the layer's view of it before see-through draws were told apart). Returns the HD frame.
+ */
+SDL_Surface *DrawSeeThroughPillar(const std::string &name, bool blended, int height)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	std::array<SDL_Color, 256> colors = Palette();
+	colors[Blend] = BlendColor;
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteTileArt(pack, "tile/t/7.png", FrontArt, 128, 64, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	if (!hd::Enabled()) return nullptr;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, height, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::SetTileset("t");
+	{
+		const Surface out(pal);
+		const hd::PillarScope pillar(out, { 0, 31 }, 7, 1);
+		uint8_t art[8];
+		std::fill_n(art, 8, Own);
+		uint8_t *opaque = static_cast<uint8_t *>(pal->pixels) + 4 * pal->pitch + 4;
+		std::fill_n(opaque, 8, Own);
+		hd::Mark(opaque, art, 8, 0);
+		uint8_t *seeThrough = static_cast<uint8_t *>(pal->pixels) + 8 * pal->pitch + 4;
+		if (blended) hd::BeforeBlend(seeThrough, 8);
+		std::fill_n(seeThrough, 8, Blend);
+		hd::Mark(seeThrough, art, 8, 0);
+		if (blended) hd::MarkBlend(seeThrough, art, 8); // lit at level 0: the art's own index
+	}
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	hd::SetTileset("");
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, ASeeThroughWallShowsWhatIsBehindItAndLeavesItsLightLevelAlone)
+{
+	// The pairs (Own, Blend) of the see-through pixels went into the light level's grade and pulled the opaque part of the wall off too
+	SDL_Surface *before = DrawSeeThroughPillar("seethrough_none", false, 30);
+	ASSERT_NE(before, nullptr);
+	const SDL_Color skewed = At(before, 8, 8);
+	EXPECT_FALSE(skewed.r == FrontArt.r && skewed.g == FrontArt.g && skewed.b == FrontArt.b) << "marked as opaque, the blended row pulls the rest off";
+	SDL_FreeSurface(before);
+
+	SDL_Surface *frame = DrawSeeThroughPillar("seethrough", true, 29);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 8, 8), FrontArt.r, FrontArt.g, FrontArt.b, "the opaque part: lit by nothing, as it is");
+	ExpectColor(At(frame, 8, 16), (FrontArt.r + Background.r) / 2, (FrontArt.g + Background.g) / 2, (FrontArt.b + Background.b) / 2,
+	    "the see-through part: half over what was behind it (no art there: its colour)");
+	ExpectColor(At(frame, 23, 17), (FrontArt.r + Background.r) / 2, (FrontArt.g + Background.g) / 2, (FrontArt.b + Background.b) / 2,
+	    "the see-through part, the last pixel");
 	SDL_FreeSurface(frame);
 }
 

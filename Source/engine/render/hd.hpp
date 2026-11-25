@@ -32,6 +32,16 @@
  *   - a sum lit to black grades to black (the per-pixel grade read a factor of 0 as "add the offset", so art lit to black kept most of
  *     its colour);
  *   - "shading pixel" in hd.txt keeps the old per-pixel grade everywhere.
+ *
+ * See-through (blended) draws: the game draws walls near the hero, and some sprites (the arches over a see-through wall, spell effects),
+ * half over what is behind them: paletteTransparencyLookup, the palette colour nearest to the mean of the two. The index it writes is neither
+ * the art's lit colour nor the one behind, so the layer neither grades by it nor shows the art alone: such a pixel (``blend``) keeps the index
+ * the art was lit to (what the same draw would write opaque) and what was under it (its index and provenance, one layer deep). Its art is
+ * graded by the lit index, as the opaque draw would be (and counts in its draw's or light level's grade by it), and composed half over the HD
+ * block of what was behind (that art graded as its own draw, or the plain colour where there was none): the same rule, in true colour and
+ * without the rounding to the palette. Before this the pair (art, blended index) entered the grades: art of colours of its own (anything not
+ * the 1997 palette) came out speckled yellow and purple, and the wall drawn whole, not see-through. A pixel blended over a blended pixel keeps
+ * that one as its art drawn opaque (one layer deep).
  *   - "minbright a <0..1>" in hd.txt (or DEVILUTIONX_HD_MINBRIGHT="a:<0..1>") keeps monsters readable in dim light: after the grade, no channel
  *     of a monster's art is darker than its own unlit value times that strength. It fades out over light levels 12-15, so a monster lit to
  *     black stays black. Off without the line.
@@ -147,6 +157,7 @@ struct PixelProvenance {
 	uint8_t shade : 2; ///< how the art is graded (see the top of this file): 0 per draw, 1 over the pixels of its draw nearby, 2 per pixel,
 	                   ///< 3 by light level (pillars)
 	uint8_t light : 4; ///< the light level the game lit the pixel with (0 full light .. 15 dark), where the draw knows it (pillars)
+	uint8_t blend : 1; ///< drawn half over what was behind it (see "See-through" at the top of this file; MarkBlend)
 	uint32_t serial;   ///< which draw wrote the pixel
 };
 
@@ -170,6 +181,8 @@ extern thread_local uint32_t TrackSerial;
 extern thread_local uint8_t TrackUnder;
 /** How the draw in progress is graded (PixelProvenance::shade). */
 extern thread_local uint8_t TrackShade;
+/** Set while a tracked draw into the PalSurface itself runs (not an off-screen buffer): its blended pixels keep what was behind them. */
+extern thread_local bool TrackBlend;
 /** PixelProvenance::shade of a draw graded by light level: it alone needs each pixel's light level (MarkLights, LightLevelOf). */
 constexpr uint8_t ShadeByLevel = 3;
 
@@ -183,7 +196,7 @@ inline void Mark(const uint8_t *dst, const uint8_t *src, unsigned n, uint8_t lig
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, light, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, light, 0, TrackSerial };
 	}
 }
 
@@ -197,7 +210,7 @@ inline void MarkLights(const uint8_t *dst, const uint8_t *src, unsigned n, const
 			const_cast<uint8_t *>(dst)[i] = p[i].written;
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, static_cast<uint8_t>(lights[i] & 15), TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, src[i], dst[i], TrackFree, TrackUnder, TrackShade, static_cast<uint8_t>(lights[i] & 15), 0, TrackSerial };
 	}
 }
 
@@ -214,9 +227,24 @@ inline void MarkFill(const uint8_t *dst, uint8_t color, unsigned n)
 			const_cast<uint8_t *>(dst)[i] = p[i].written; // foliage goes under a free sprite's extension
 			continue;
 		}
-		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackShade, 0, TrackSerial };
+		p[i] = { TrackImage, TrackLeft, TrackTop, color, dst[i], TrackFree, TrackUnder, TrackShade, 0, 0, TrackSerial };
 	}
 }
+
+/** BeforeBlend, when the draw tracks blended pixels. */
+void KeepBehind(const uint8_t *dst, unsigned n);
+
+/**
+ * Call before ``n`` pixels at ``dst`` are blended over what is there (paletteTransparencyLookup): keeps their indices and provenance as what is
+ * behind them. Then Mark (or MarkLights, MarkFill) them as usual, and MarkBlend.
+ */
+inline void BeforeBlend(const uint8_t *dst, unsigned n)
+{
+	if (TrackBlend) KeepBehind(dst, n);
+}
+
+/** The ``n`` pixels at ``dst`` just marked were blended (see BeforeBlend); ``lit``: the index each would have been drawn as opaque. */
+void MarkBlend(const uint8_t *dst, const uint8_t *lit, unsigned n);
 
 /** Whether an HD pack is loaded. */
 bool Enabled();
@@ -394,7 +422,8 @@ void SetLightTables(const uint8_t *tables, size_t size);
 
 /**
  * Tracks the pixels a CLX sprite draw writes (when it draws into the PalSurface). ``drawTrn``: the TRN the draw maps through. ``local``: the
- * draw's pixels don't share one light (blended over what is behind, or lit by the per-pixel lightmap), so they are graded locally.
+ * draw's pixels don't share one light (lit by the per-pixel lightmap), so they are graded locally. A blended draw is graded as the same draw
+ * opaque (see "See-through" at the top of this file).
  */
 class SpriteScope {
 public:

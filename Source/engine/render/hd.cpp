@@ -42,6 +42,7 @@ thread_local uint8_t TrackFree = 0;
 thread_local uint32_t TrackSerial = 0;
 thread_local uint8_t TrackUnder = 0;
 thread_local uint8_t TrackShade = 0;
+thread_local bool TrackBlend = false;
 
 namespace {
 
@@ -258,6 +259,11 @@ int PlaneHeight = 0;
 bool FreeSilhouette = false;
 std::vector<PixelProvenance> BehindProv;
 std::vector<uint8_t> BehindIdx;
+/**
+ * See-through draws (hd.hpp, "See-through"): for each pixel drawn blended (PixelProvenance::blend), the index its art was lit to, what the same
+ * draw would have written opaque. What was behind it is in BehindProv / BehindIdx, as for free silhouettes. Made at the first blended draw.
+ */
+std::vector<uint8_t> BlendLit;
 uint32_t NextSerial = 0;
 
 /** ForgetView: the game view's rectangle, and the last draw before it was drawn anew. */
@@ -732,12 +738,25 @@ bool EnsurePlane()
 		PlaneHeight = Target->h;
 		Plane.assign(static_cast<size_t>(PlanePitch) * PlaneHeight, PixelProvenance {});
 		Overlays.clear();
-		if (FreeSilhouette) {
+		if (FreeSilhouette || !BehindProv.empty()) {
 			BehindProv.assign(Plane.size(), PixelProvenance {});
 			BehindIdx.assign(Plane.size(), 0);
 		}
+		if (!BlendLit.empty()) BlendLit.assign(Plane.size(), 0);
 	}
 	return true;
+}
+
+/** Whether the pixel ``p`` at ``at`` of the plane was drawn blended, with what was behind it kept (BlendLit, BehindProv / BehindIdx). */
+bool Blended(const PixelProvenance &p, size_t at)
+{
+	return p.blend != 0 && BlendLit.size() == Plane.size() && BehindProv.size() == Plane.size() && at < BlendLit.size();
+}
+
+/** The index the art of the pixel ``p`` at ``at`` of the plane shows (``index``: the pixel's index now): for a blended pixel, its lit index. */
+uint8_t ShownIndex(const PixelProvenance &p, size_t at, uint8_t index)
+{
+	return p.blend != 0 && at < BlendLit.size() ? BlendLit[at] : index;
 }
 
 struct SavedTrack {
@@ -747,6 +766,7 @@ struct SavedTrack {
 	int16_t left, top;
 	uint8_t free;
 	uint8_t shade;
+	bool blend;
 	uint32_t serial;
 };
 thread_local SavedTrack Saved;
@@ -813,7 +833,7 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 				continue;
 			}
 			PixelProvenance p = self ? row[x] : off->plane[static_cast<size_t>(fy) * srcPitch + sx + x];
-			if (self && Stale(p, sx + x, fy)) p = {};
+			if (self && (Stale(p, sx + x, fy) || p.blend != 0)) p = {}; // (what was behind a blended pixel stays where it was)
 			if (p.image != 0) {
 				p.left = static_cast<int16_t>(p.left + dx - sx);
 				p.top = static_cast<int16_t>(p.top + dy - sy);
@@ -826,8 +846,9 @@ void CopyProvenance(const Surface &src, SDL_Rect r, const Surface &dst, Point at
 
 void Begin(const Surface &out, uint32_t image, int left, int top, bool free = false)
 {
-	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackShade, TrackSerial };
+	Saved = { TrackPlane, TrackBase, TrackImage, TrackLeft, TrackTop, TrackFree, TrackShade, TrackBlend, TrackSerial };
 	TrackShade = PixelShading ? ShadePixel : ShadeDraw;
+	TrackBlend = false;
 	Free.on = false;
 	Fx.fx = 0;
 	if (!Active) return;
@@ -851,6 +872,7 @@ void Begin(const Surface &out, uint32_t image, int left, int top, bool free = fa
 	TrackTop = static_cast<int16_t>(top);
 	TrackFree = 0;
 	TrackSerial = ++NextSerial;
+	TrackBlend = true;
 	if (!free || !FreeSilhouette || image == 0 || Images[image].w == 0 || BehindProv.size() != Plane.size()) return;
 	const HdImage &img = Images[image];
 	const int x0 = std::max({ left, out.region.x, 0 });
@@ -959,7 +981,7 @@ void ExtendWholeArt(const HdImage &img)
 	auto *pixels = static_cast<uint8_t *>(Target->pixels);
 	for (const Extension &e : extend) {
 		pixels[e.at] = e.donor.written;
-		Plane[e.at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), e.donor.source, e.donor.written, 2, 0, TrackShade, e.donor.light, TrackSerial };
+		Plane[e.at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), e.donor.source, e.donor.written, 2, 0, TrackShade, e.donor.light, 0, TrackSerial };
 	}
 }
 
@@ -1032,7 +1054,7 @@ void ExtendFootprint()
 		donors.push_back(*e.donor);
 	for (size_t i = 0; i < extend.size(); ++i) {
 		pixels[extend[i].at] = donors[i].written;
-		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, 0, TrackShade, donors[i].light, TrackSerial };
+		Plane[extend[i].at] = { Free.image, static_cast<int16_t>(Free.left), static_cast<int16_t>(Free.top), donors[i].source, donors[i].written, 2, 0, TrackShade, donors[i].light, 0, TrackSerial };
 	}
 }
 
@@ -1072,10 +1094,16 @@ void CommitBehind()
 	for (int y = Free.y0; y < Free.y1; ++y)
 		for (int x = Free.x0; x < Free.x1; ++x) {
 			const size_t at = static_cast<size_t>(y) * PlanePitch + x;
-			if (Plane[at].serial != Free.serial) continue;
+			if (Plane[at].serial != Free.serial || Plane[at].blend != 0) continue; // (a blended pixel kept what was behind it as it drew: KeepBehind)
 			const size_t saved = (y - Free.y0) * rowLen + (x - Free.x0);
-			BehindIdx[at] = SavedIdx[saved];
-			BehindProv[at] = SavedProv[saved];
+			PixelProvenance behind = SavedProv[saved];
+			uint8_t index = SavedIdx[saved];
+			if (behind.blend != 0) { // a blended pixel behind: its art as drawn opaque (one layer deep), as KeepBehind keeps it
+				if (behind.image != 0 && behind.written == index && at < BlendLit.size()) index = behind.written = BlendLit[at];
+				behind.blend = 0;
+			}
+			BehindIdx[at] = index;
+			BehindProv[at] = behind;
 		}
 }
 
@@ -1097,6 +1125,7 @@ void End()
 	TrackTop = Saved.top;
 	TrackFree = Saved.free;
 	TrackShade = Saved.shade;
+	TrackBlend = Saved.blend;
 	TrackSerial = Saved.serial;
 }
 
@@ -1363,26 +1392,30 @@ void PrepareRows(SDL_Surface *pal, int y0, int y1, BandSums *sums)
 	const bool haveBehind = BehindProv.size() == Plane.size();
 	uint32_t lastSerial = 0;
 	GradeSums *last = nullptr;
-	const auto add = [&](const PixelProvenance &p, uint8_t index) {
-		if ((p.shade != ShadeDraw && p.shade != ShadeLevel) || p.free == 2 || !Graded(p, index) || IsCycled(p.source, index)) return;
+	// ``shown``: the index the art is graded by, the pixel's own but for a blended one (its lit index: the pair its draw would have made opaque)
+	const auto add = [&](const PixelProvenance &p, uint8_t index, uint8_t shown) {
+		if ((p.shade != ShadeDraw && p.shade != ShadeLevel) || p.free == 2 || !Graded(p, index) || IsCycled(p.source, shown)) return;
 		const HdImage &img = Images[p.image];
 		if (p.shade == ShadeLevel) {
 			const size_t at = static_cast<size_t>(img.palette) * 16 + p.light;
-			if (at < sums->levels.size()) sums->levels[at].Add(img.ref.data(), p.source, index);
+			if (at < sums->levels.size()) sums->levels[at].Add(img.ref.data(), p.source, shown);
 			return;
 		}
 		if (last == nullptr || p.serial != lastSerial) {
 			last = &sums->draws[p.serial];
 			lastSerial = p.serial;
 		}
-		last->Add(img.ref.data(), p.source, index);
+		last->Add(img.ref.data(), p.source, shown);
 	};
 	for (int y = y0; y < y1; ++y) {
 		for (int x = 0; x < pal->w; ++x) {
 			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
-			if (Plane[at].image == 0) continue;
-			add(Plane[at], pixels[at]);
-			if (haveBehind && Plane[at].free != 0 && !Stale(BehindProv[at], x, y)) add(BehindProv[at], BehindIdx[at]);
+			const PixelProvenance &p = Plane[at];
+			if (p.image == 0) continue;
+			const bool blended = p.blend != 0 && Blended(p, at);
+			add(p, pixels[at], blended ? BlendLit[at] : pixels[at]);
+			// what shows behind a free silhouette, or half behind a blended pixel that still shows, is graded as its own draw
+			if (haveBehind && (p.free != 0 || (blended && p.written == pixels[at])) && !Stale(BehindProv[at], x, y)) add(BehindProv[at], BehindIdx[at], BehindIdx[at]);
 		}
 	}
 }
@@ -1419,8 +1452,10 @@ bool LocalGrade(const PixelProvenance *plane, const uint8_t *idx, int pitch, int
 		for (int qx = std::max(0, x - LocalRadius); qx <= std::min(w - 1, x + LocalRadius); ++qx) {
 			const size_t at = static_cast<size_t>(qy) * pitch + qx;
 			const PixelProvenance &q = plane[at];
-			if (q.serial != serial || !Graded(q, idx[at]) || IsCycled(q.source, idx[at])) continue;
-			s.Add(live[idx[at]], &Images[q.image].ref[q.source * 3]);
+			if (q.serial != serial || !Graded(q, idx[at])) continue;
+			const uint8_t shown = plane == Plane.data() ? ShownIndex(q, at, idx[at]) : idx[at];
+			if (IsCycled(q.source, shown)) continue;
+			s.Add(live[shown], &Images[q.image].ref[q.source * 3]);
 		}
 	}
 	if (s.n == 0) return false;
@@ -1443,7 +1478,8 @@ const Grade *GradeOf(const PixelProvenance &p, const PixelProvenance *plane, con
 {
 	const HdImage &img = Images[p.image];
 	if (!img.hasRef) return nullptr;
-	const uint8_t index = idx[static_cast<size_t>(y) * pitch + x];
+	const size_t pos = static_cast<size_t>(y) * pitch + x;
+	const uint8_t index = plane == Plane.data() ? ShownIndex(p, pos, idx[pos]) : idx[pos]; // (a blended pixel: graded by its lit index)
 	// a colour the level animates follows the animation, not the light: graded on its own, as no grade of the rest fits it
 	const bool cycled = IsCycled(p.source, index);
 	if (!cycled && p.shade == ShadeDraw) {
@@ -1561,6 +1597,16 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 	Grade scratch, behindScratch;
 	GradeCache cache, behindCache;
 	FloorCache floorCache, behindFloorCache;
+	// The HD block of what was behind the pixel at ``at`` (BehindProv / BehindIdx), graded as its own draw, or its plain colour, into ``under``
+	const auto behindBlock = [&](size_t at, int x, int y, uint32_t *under) {
+		const uint8_t behind = BehindIdx[at];
+		const SDL_Color bc = live[behind];
+		const PixelProvenance &bp = BehindProv[at];
+		const HdImage *behindImg = bp.image != 0 && bp.written == behind && !Stale(bp, x, y) ? &Images[bp.image] : nullptr;
+		if (behindImg == nullptr || behindImg->w == 0
+		    || !SampleBlock(*behindImg, bp, x, y, bc, GradeOf(bp, BehindProv.data(), BehindIdx.data(), pal->pitch, w, pal->h, x, y, live, behindScratch, behindCache), under, n, nullptr, FloorFactorOf(bp, behindFloorCache)))
+			FillBlock(under, n, n, 0xFF000000U | (bc.r << 16) | (bc.g << 8) | bc.b);
+	};
 	for (int y = y0; y < y1; ++y) {
 		for (int x = 0; x < w; ++x) {
 			const size_t at = static_cast<size_t>(y) * pal->pitch + x;
@@ -1574,16 +1620,29 @@ void ComposeRows(SDL_Surface *pal, int y0, int y1)
 				FillBlock(dst, outW, n, flat);
 				continue;
 			}
+			if (p->blend != 0 && Blended(*p, at)) {
+				// See-through: the art, graded by the index it was lit to, half over what was behind it (paletteTransparencyLookup's rule, in
+				// true colour); where the art has no pixel, the pixel's own colour, as the game blended it
+				uint32_t under[64];
+				behindBlock(at, x, y, under);
+				const SDL_Color lc = live[BlendLit[at]];
+				if (!SampleBlock(*img, *p, x, y, lc, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, under, FloorFactorOf(*p, floorCache))) {
+					FillBlock(dst, outW, n, flat);
+					continue;
+				}
+				for (int j = 0; j < n; ++j) {
+					uint32_t *row = dst + static_cast<size_t>(j) * outW;
+					for (int i = 0; i < n; ++i) {
+						const uint32_t a = row[i], b = under[j * n + i];
+						row[i] = 0xFF000000U | ((a & b & 0xFFFFFFU) + (((a ^ b) & 0xFEFEFEU) >> 1)); // per channel (a + b) / 2, as BlendColors
+					}
+				}
+				continue;
+			}
 			if (p->free != 0 && haveBehind) {
 				// Free silhouette: the art blends over what was behind the sprite here, not over the sprite's own pixel
 				uint32_t under[64];
-				const uint8_t behind = BehindIdx[at];
-				const SDL_Color bc = live[behind];
-				const PixelProvenance &bp = BehindProv[at];
-				const HdImage *behindImg = bp.image != 0 && bp.written == behind && !Stale(bp, x, y) ? &Images[bp.image] : nullptr;
-				if (behindImg == nullptr || behindImg->w == 0
-				    || !SampleBlock(*behindImg, bp, x, y, bc, GradeOf(bp, BehindProv.data(), BehindIdx.data(), pal->pitch, w, pal->h, x, y, live, behindScratch, behindCache), under, n, nullptr, FloorFactorOf(bp, behindFloorCache)))
-					FillBlock(under, n, n, 0xFF000000U | (bc.r << 16) | (bc.g << 8) | bc.b);
+				behindBlock(at, x, y, under);
 				if (!SampleBlock(*img, *p, x, y, c, GradeOf(*p, Plane.data(), pixels, pal->pitch, w, pal->h, x, y, live, scratch, cache), dst, outW, under, FloorFactorOf(*p, floorCache)))
 					FillBlock(dst, outW, n, flat);
 				continue;
@@ -1677,7 +1736,10 @@ void Collect()
 			if (p.image != 0 && p.image < shown.size()) shown[p.image] = 1;
 	};
 	mark(Plane);
-	mark(BehindProv);
+	for (size_t i = 0; i < BehindProv.size() && i < Plane.size(); ++i) { // what is behind a pixel shows only behind a free or blended one
+		const PixelProvenance &p = BehindProv[i];
+		if (p.image != 0 && p.image < shown.size() && (Plane[i].free != 0 || Plane[i].blend != 0)) shown[p.image] = 1;
+	}
 	for (const Offscreen &o : Offscreens)
 		mark(o.plane);
 	for (const Overlay &o : Overlays)
@@ -2415,6 +2477,41 @@ void SetLightTables(const uint8_t *tables, size_t size)
 {
 	LightTablesBegin = tables;
 	LightTablesEnd = tables != nullptr ? tables + size : nullptr;
+}
+
+void KeepBehind(const uint8_t *dst, unsigned n)
+{
+	if (TrackPlane == nullptr || TrackPlane != Plane.data() || TrackBase == nullptr) return;
+	if (BehindProv.size() != Plane.size()) {
+		BehindProv.assign(Plane.size(), PixelProvenance {});
+		BehindIdx.assign(Plane.size(), 0);
+	}
+	if (BlendLit.size() != Plane.size()) BlendLit.assign(Plane.size(), 0);
+	const size_t at = static_cast<size_t>(dst - TrackBase);
+	if (at + n > Plane.size()) return;
+	for (unsigned i = 0; i < n; ++i) {
+		PixelProvenance p = Plane[at + i];
+		uint8_t index = dst[i];
+		if (p.blend != 0) { // blended itself: kept as its art drawn opaque (one layer deep)
+			if (p.image != 0 && p.written == index) index = p.written = BlendLit[at + i];
+			p.blend = 0;
+		}
+		BehindProv[at + i] = p;
+		BehindIdx[at + i] = index;
+	}
+}
+
+void MarkBlend(const uint8_t *dst, const uint8_t *lit, unsigned n)
+{
+	if (!TrackBlend || TrackPlane != Plane.data() || BlendLit.size() != Plane.size()) return;
+	const size_t at = static_cast<size_t>(dst - TrackBase);
+	if (at + n > Plane.size()) return;
+	for (unsigned i = 0; i < n; ++i) {
+		PixelProvenance &p = Plane[at + i];
+		if (p.serial != TrackSerial) continue; // (foliage under a free sprite's extension: not drawn)
+		p.blend = 1;
+		BlendLit[at + i] = lit[i];
+	}
 }
 
 void NewScene()

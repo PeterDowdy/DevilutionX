@@ -589,6 +589,41 @@ std::string ClxDescribe(ClxSprite clx)
 #endif // DEBUG_CLX
 
 namespace {
+/** Blits that draw half over what is behind (paletteTransparencyLookup): the HD layer keeps what was behind (hd.hpp, "See-through"). */
+template <typename BlitFn>
+constexpr bool HdBlends = std::is_same_v<BlitFn, BlitBlended> || std::is_same_v<BlitFn, BlitBlendedWithMap> || std::is_same_v<BlitFn, BlitBlendedWithLightmap>;
+
+/** The index a blended blit's pixel ``color`` at ``dst`` is lit to before it is blended: what the same blit opaque writes. */
+DVL_ALWAYS_INLINE uint8_t HdLit(const BlitBlended & /*blit*/, uint8_t color, const uint8_t * /*light*/, unsigned /*i*/)
+{
+	return color;
+}
+DVL_ALWAYS_INLINE uint8_t HdLit(const BlitBlendedWithMap &blit, uint8_t color, const uint8_t * /*light*/, unsigned /*i*/)
+{
+	return blit.colorMap[color];
+}
+DVL_ALWAYS_INLINE uint8_t HdLit(const BlitBlendedWithLightmap &blit, uint8_t color, const uint8_t *light, unsigned i)
+{
+	return blit.lightmap.adjustColor(color, light[i]);
+}
+
+/** hd::MarkBlend for ``length`` pixels at ``dst`` that ``blit`` just drew blended from the indices ``src`` (null: all ``color``). */
+template <typename BlitFn>
+void HdMarkBlended(const BlitFn &blit, uint8_t *dst, const uint8_t *src, uint8_t color, unsigned length)
+{
+	if (!hd::TrackBlend) return;
+	const uint8_t *light = nullptr;
+	if constexpr (std::is_same_v<BlitFn, BlitBlendedWithLightmap>) light = blit.lightmap.getLightingAt(dst);
+	uint8_t lit[256];
+	for (unsigned done = 0; done < length;) {
+		const unsigned n = std::min(length - done, 256U);
+		for (unsigned i = 0; i < n; ++i)
+			lit[i] = HdLit(blit, src != nullptr ? src[done + i] : color, light, done + i);
+		hd::MarkBlend(dst + done, lit, n);
+		done += n;
+	}
+}
+
 /** A blit that also records what it wrote in the HD layer's provenance plane. */
 template <typename BlitFn>
 struct HdMarked {
@@ -596,13 +631,17 @@ struct HdMarked {
 
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
 	{
+		if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst, length);
 		blit(length, dst, src);
 		hd::Mark(dst, src, length);
+		if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst, src, 0, length);
 	}
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
 	{
+		if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst, length);
 		blit(length, color, dst);
 		hd::MarkFill(dst, color, length);
+		if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst, nullptr, color, length);
 	}
 };
 
@@ -619,15 +658,19 @@ struct HdRecoloured {
 			const unsigned n = std::min(length - done, 256U);
 			for (unsigned i = 0; i < n; ++i)
 				recoloured[i] = trn[src[done + i]];
+			if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst + done, n);
 			blit(n, dst + done, recoloured);
 			hd::Mark(dst + done, src + done, n);
+			if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst + done, recoloured, 0, n);
 			done += n;
 		}
 	}
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
 	{
+		if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst, length);
 		blit(length, trn[color], dst);
 		hd::MarkFill(dst, color, length);
+		if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst, nullptr, trn[color], length);
 	}
 };
 
@@ -639,6 +682,7 @@ struct HdMapMarked {
 
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src) const
 	{
+		if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst, length);
 		blit(length, dst, src);
 		uint8_t mapped[256];
 		for (unsigned done = 0; done < length;) {
@@ -648,18 +692,23 @@ struct HdMapMarked {
 			hd::Mark(dst + done, mapped, n);
 			done += n;
 		}
+		if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst, src, 0, length);
 	}
 	DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void operator()(unsigned length, uint8_t color, uint8_t *DVL_RESTRICT dst) const
 	{
+		if constexpr (HdBlends<BlitFn>) hd::BeforeBlend(dst, length);
 		blit(length, color, dst);
 		hd::MarkFill(dst, map[color], length);
+		if constexpr (HdBlends<BlitFn>) HdMarkBlended(blit, dst, nullptr, color, length);
 	}
 };
 
-/** Blits whose pixels don't share one light (blended over what is behind, or lit per pixel): the HD layer grades their art locally. */
+/**
+ * Blits whose pixels don't share one light (lit per pixel): the HD layer grades their art locally. A blended blit is graded as the same blit
+ * opaque, by the indices its art was lit to (HdMarkBlended).
+ */
 template <typename BlitFn>
-constexpr bool HdLocalShade = std::is_same_v<BlitFn, BlitWithLightmap> || std::is_same_v<BlitFn, BlitBlended>
-    || std::is_same_v<BlitFn, BlitBlendedWithMap> || std::is_same_v<BlitFn, BlitBlendedWithLightmap>;
+constexpr bool HdLocalShade = std::is_same_v<BlitFn, BlitWithLightmap> || std::is_same_v<BlitFn, BlitBlendedWithLightmap>;
 
 /** ``drawTrn``: the TRN ``blitFn`` maps through, if any, so the HD layer can use art of that swap. */
 template <typename BlitFn>
