@@ -25,6 +25,10 @@
  *     recolour's regions carry over without the original's pixel pattern;
  *   - pillars, which the game lights piece by piece or pixel by pixel, take the grade of their light level, over all the pillar pixels of
  *     the frame lit at that level (and drawn with the same reference palette);
+ *   - colours the level animates on its own (SetCycledColors: the lava and water of the caves, which colour cycling moves through the
+ *     palette, and Hell's blood walls, which its light tables light apart from the ramps and rotate) are graded pixel by pixel, in any
+ *     draw, and left out of every sum above: their (reference, live) pairs follow the animation, not the light, and pulled the grade of
+ *     the rest of their draw or light level off (a Hell pillar's pixels drawn red and dark);
  *   - a sum lit to black grades to black (the per-pixel grade read a factor of 0 as "add the offset", so art lit to black kept most of
  *     its colour);
  *   - "shading pixel" in hd.txt keeps the old per-pixel grade everywhere.
@@ -375,6 +379,12 @@ void ForgetView(const Surface &out);
 
 /** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
 void SetTileset(std::string_view name);
+
+/**
+ * The palette indices ``first`` to ``last`` (none when first > last) are animated by the level (CycledColors): pixels whose art or drawn index
+ * is one of them are graded pixel by pixel and left out of the grades of their draw and light level (see the top of this file).
+ */
+void SetCycledColors(uint8_t first, uint8_t last);
 
 /**
  * The game's light tables (``size`` bytes from ``tables``): a sprite drawn through one of them is only lit, and takes one grade for the whole

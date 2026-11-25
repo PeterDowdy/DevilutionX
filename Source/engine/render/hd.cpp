@@ -213,6 +213,16 @@ constexpr int LocalRadius = 2;
 /** SetLightTables */
 const uint8_t *LightTablesBegin = nullptr;
 const uint8_t *LightTablesEnd = nullptr;
+/** SetCycledColors: first | last << 8 (the game may set it from another thread than the one presenting). */
+std::atomic<uint16_t> CycledRange { 0x0001 };
+/** The indices of CycledRange as the frame being composed sees them (Compose sets it before its threads start). */
+std::array<bool, 256> Cycled {};
+
+/** Whether a pixel drawn from the art index ``source`` as ``index`` shows a colour the level animates (SetCycledColors). */
+bool IsCycled(uint8_t source, uint8_t index)
+{
+	return Cycled[source] || Cycled[index];
+}
 
 /**
  * A minimum brightness for monsters in dim light (off unless the pack asks for it, and then only monsters' art is touched): the hd.txt line
@@ -1354,7 +1364,7 @@ void PrepareRows(SDL_Surface *pal, int y0, int y1, BandSums *sums)
 	uint32_t lastSerial = 0;
 	GradeSums *last = nullptr;
 	const auto add = [&](const PixelProvenance &p, uint8_t index) {
-		if ((p.shade != ShadeDraw && p.shade != ShadeLevel) || p.free == 2 || !Graded(p, index)) return;
+		if ((p.shade != ShadeDraw && p.shade != ShadeLevel) || p.free == 2 || !Graded(p, index) || IsCycled(p.source, index)) return;
 		const HdImage &img = Images[p.image];
 		if (p.shade == ShadeLevel) {
 			const size_t at = static_cast<size_t>(img.palette) * 16 + p.light;
@@ -1409,7 +1419,7 @@ bool LocalGrade(const PixelProvenance *plane, const uint8_t *idx, int pitch, int
 		for (int qx = std::max(0, x - LocalRadius); qx <= std::min(w - 1, x + LocalRadius); ++qx) {
 			const size_t at = static_cast<size_t>(qy) * pitch + qx;
 			const PixelProvenance &q = plane[at];
-			if (q.serial != serial || !Graded(q, idx[at])) continue;
+			if (q.serial != serial || !Graded(q, idx[at]) || IsCycled(q.source, idx[at])) continue;
 			s.Add(live[idx[at]], &Images[q.image].ref[q.source * 3]);
 		}
 	}
@@ -1434,22 +1444,24 @@ const Grade *GradeOf(const PixelProvenance &p, const PixelProvenance *plane, con
 	const HdImage &img = Images[p.image];
 	if (!img.hasRef) return nullptr;
 	const uint8_t index = idx[static_cast<size_t>(y) * pitch + x];
-	if (p.shade == ShadeDraw) {
+	// a colour the level animates follows the animation, not the light: graded on its own, as no grade of the rest fits it
+	const bool cycled = IsCycled(p.source, index);
+	if (!cycled && p.shade == ShadeDraw) {
 		if (cache.grade != nullptr && cache.serial == p.serial) return cache.grade;
 		const auto found = DrawGrades.find(p.serial);
 		if (found != DrawGrades.end()) {
 			cache = { p.serial, &found->second };
 			return cache.grade;
 		}
-	} else if (p.shade == ShadeLevel) {
+	} else if (!cycled && p.shade == ShadeLevel) {
 		const size_t at = static_cast<size_t>(img.palette) * 16 + p.light;
 		if (at < LevelGraded.size() && LevelGraded[at] != 0) return &LevelGrades[at];
-	} else if (p.shade == ShadeLocal && LocalGrade(plane, idx, pitch, w, h, x, y, p.serial, live, scratch)) {
+	} else if (!cycled && p.shade == ShadeLocal && LocalGrade(plane, idx, pitch, w, h, x, y, p.serial, live, scratch)) {
 		return &scratch;
 	}
 	const uint8_t *ref = &img.ref[p.source * 3];
 	const SDL_Color c = live[index];
-	if (p.shade == ShadePixel)
+	if (p.shade == ShadePixel || cycled)
 		scratch = { ChannelGrade(ref[0], c.r), ChannelGrade(ref[1], c.g), ChannelGrade(ref[2], c.b) };
 	else // a draw with no grade of its own here (none of its pixels is left to sum): this pixel alone
 		scratch = { ChannelGrade::OfSums(ref[0], c.r, 1), ChannelGrade::OfSums(ref[1], c.g, 1), ChannelGrade::OfSums(ref[2], c.b, 1) };
@@ -1710,6 +1722,9 @@ void Compose(SDL_Surface *pal)
 	const int rows = (pal->h + threads - 1) / threads;
 	const bool havePlane = PlanePitch == pal->pitch && PlaneHeight == pal->h;
 	const bool grading = havePlane && !PixelShading;
+	const uint16_t cycled = CycledRange.load(std::memory_order_relaxed);
+	for (int i = 0; i < 256; ++i)
+		Cycled[i] = i >= (cycled & 0xFF) && i <= (cycled >> 8);
 	DrawGrades.clear();
 	LevelGraded.clear();
 	std::vector<BandSums> sums(grading ? threads : 0);
@@ -2389,6 +2404,11 @@ uint8_t LightLevelOf(const uint8_t *table)
 {
 	if (table == nullptr || table < LightTablesBegin || table >= LightTablesEnd) return 0;
 	return static_cast<uint8_t>(std::min<ptrdiff_t>((table - LightTablesBegin) / 256, 15));
+}
+
+void SetCycledColors(uint8_t first, uint8_t last)
+{
+	CycledRange.store(static_cast<uint16_t>(first | (last << 8)), std::memory_order_relaxed);
 }
 
 void SetLightTables(const uint8_t *tables, size_t size)

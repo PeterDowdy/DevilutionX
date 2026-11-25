@@ -49,16 +49,17 @@ void MakeLightTable()
 
 	if (leveltype == DTYPE_HELL) {
 		// Blood wall lighting
+		const PaletteRange blood = CycledColors(DTYPE_HELL);
 		const auto shades = static_cast<int>(LightTables.size() - 1);
 		for (int i = 0; i < shades; i++) {
 			auto &lightTable = LightTables[i];
 			constexpr int Range = 16;
 			for (int j = 0; j < Range; j++) {
 				uint8_t color = ((Range - 1) << 4) / shades * (shades - i) / Range * (j + 1);
-				color = 1 + (color >> 4);
-				int idx = j + 1;
+				color = blood.first + (color >> 4);
+				int idx = blood.first + j;
 				lightTable[idx] = color;
-				idx = 31 - j;
+				idx = blood.last - j;
 				lightTable[idx] = color;
 			}
 		}
@@ -113,6 +114,20 @@ void MakeLightTable()
 				}
 			}
 		}
+	}
+}
+
+PaletteRange CycledColors(dungeon_type type)
+{
+	switch (type) {
+	case DTYPE_CAVES:
+	case DTYPE_HELL:
+	case DTYPE_CRYPT:
+		return { 1, 31 };
+	case DTYPE_NEST:
+		return { 1, 15 };
+	default:
+		return {};
 	}
 }
 
