@@ -21,6 +21,7 @@
 #include "engine/backbuffer_state.hpp"
 #include "engine/demomode.h"
 #include "engine/dx.h"
+#include "engine/light_tables.hpp"
 #include "engine/load_file.hpp"
 #include "engine/random.hpp"
 #include "headless_mode.hpp"
@@ -362,8 +363,9 @@ void PaletteFadeOut(int fr, const std::array<SDL_Color, 256> &srcPalette)
 
 void palette_update_caves()
 {
-	CycleColors(1, 31);
-	SystemPaletteUpdated(1, 31);
+	const PaletteRange cycled = CycledColors(DTYPE_CAVES);
+	CycleColors(cycled.first, cycled.last);
+	SystemPaletteUpdated(cycled.first, cycled.last);
 }
 
 /**

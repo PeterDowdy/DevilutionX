@@ -479,9 +479,10 @@ void ProcessVisionList()
 
 void lighting_color_cycling()
 {
+	const PaletteRange cycled = CycledColors(DTYPE_HELL);
 	for (auto &lightTable : LightTables) {
 		// shift elements between indexes 1-31 to left
-		std::rotate(lightTable.begin() + 1, lightTable.begin() + 2, lightTable.begin() + 32);
+		std::rotate(lightTable.begin() + cycled.first, lightTable.begin() + cycled.first + 1, lightTable.begin() + cycled.last + 1);
 	}
 }
 

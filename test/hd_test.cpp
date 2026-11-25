@@ -1253,6 +1253,28 @@ TEST(HdTest, PixelShadingKeepsTheOldGrade)
 	SDL_FreeSurface(frame);
 }
 
+TEST(HdTest, ColoursTheLevelAnimatesAreGradedOnTheirOwn)
+{
+	// Hell's light tables light its blood walls apart from the ramps and rotate them (colour cycling): Own (index 10) is drawn as OwnLit, Other
+	// as itself. Without the cycled colours both halves take one grade that fits neither; with them Other keeps its art and Own alone follows
+	// the animation, pixel by pixel
+	std::array<uint8_t, 256> light = Identity();
+	light[Own] = OwnLit;
+	SDL_Surface *whole = DrawShadingScenario("cyclednone", "", light.data(), true);
+	ASSERT_NE(whole, nullptr);
+	const SDL_Color skewed = At(whole, 22, 4);
+	EXPECT_FALSE(skewed.r == FrontArt.r && skewed.g == FrontArt.g && skewed.b == FrontArt.b) << "the animated half pulls the other off";
+	SDL_FreeSurface(whole);
+
+	hd::SetCycledColors(1, 31);
+	SDL_Surface *frame = DrawShadingScenario("cycled", "", light.data(), true);
+	hd::SetCycledColors(1, 0);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 22, 4), FrontArt.r, FrontArt.g, FrontArt.b, "Other: lit by nothing, as it is");
+	ExpectColor(At(frame, 9, 4), FrontArt.r / 2, FrontArt.g / 2, FrontArt.b / 2, "Own: times OwnLit / Own (a half), per pixel");
+	SDL_FreeSurface(frame);
+}
+
 TEST(HdTest, TheViewForgetsArtDrawnInEarlierFrames)
 {
 	// The game fills what it doesn't draw (unlit tiles) without the layer seeing it; a pixel that keeps its index must not keep its art
@@ -2059,6 +2081,83 @@ SDL_Surface *DrawPillarAt(const std::string &name, const std::string &periodLine
 	SDL_FreeSurface(pal);
 	fs::remove_all(pack);
 	return frame;
+}
+
+/**
+ * Draws pillar 7 of tileset "t" lit at level 0, eight pixels of Own (an animated colour, drawn as OwnLit as Hell's rotated light table
+ * may draw it) at (4..11, 4) and two of Other (drawn as itself) at (4..5, 8), with the cycled colours 1-31 when ``cycled``, and returns the HD frame.
+ */
+SDL_Surface *DrawCycledPillar(const std::string &name, const std::string &extra, bool cycled)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = ShadingPalette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n" << extra;
+		WriteTileArt(pack, "tile/t/7.png", FrontArt, 128, 64, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	if (!hd::Enabled()) return nullptr;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 32, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	hd::SetTileset("t");
+	hd::SetCycledColors(1, cycled ? 31 : 0);
+	{
+		const Surface out(pal);
+		const hd::PillarScope pillar(out, { 0, 31 }, 7, 1);
+		const auto draw = [&](int x, int y, uint8_t art, uint8_t written) {
+			uint8_t *dst = static_cast<uint8_t *>(pal->pixels) + y * pal->pitch + x;
+			*dst = written;
+			hd::Mark(dst, &art, 1, 0);
+		};
+		for (int x = 4; x < 12; ++x)
+			draw(x, 4, Own, OwnLit);
+		draw(4, 8, Other, Other);
+		draw(5, 8, Other, Other);
+	}
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	hd::SetCycledColors(1, 0);
+	hd::SetTileset("");
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+	return frame;
+}
+
+TEST(HdTest, ColoursTheLevelAnimatesStayOutOfAPillarsLightLevel)
+{
+	// A pillar's grade is its light level's, over all the pillar pixels lit at that level: the blood walls of Hell are most of them, and drew
+	// the rest of the pillar red and dark. Left out of the level's grade and graded on their own, every pixel is as "shading pixel" draws it
+	SDL_Surface *pixel = DrawCycledPillar("cycled_pillar_pixel", "shading pixel\n", false);
+	ASSERT_NE(pixel, nullptr);
+	const SDL_Color own = At(pixel, 8, 8), other = At(pixel, 8, 16);
+	ExpectColor(other, FrontArt.r, FrontArt.g, FrontArt.b, "shading pixel: Other as it is");
+	SDL_FreeSurface(pixel);
+
+	SDL_Surface *before = DrawCycledPillar("cycled_pillar_none", "", false);
+	ASSERT_NE(before, nullptr);
+	const SDL_Color skewed = At(before, 8, 16);
+	EXPECT_FALSE(skewed.r == FrontArt.r && skewed.g == FrontArt.g && skewed.b == FrontArt.b) << "without the cycled colours Other is pulled off";
+	SDL_FreeSurface(before);
+
+	SDL_Surface *frame = DrawCycledPillar("cycled_pillar", "", true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 8, 16), other.r, other.g, other.b, "Other: as shading pixel draws it");
+	ExpectColor(At(frame, 8, 8), own.r, own.g, own.b, "Own: as shading pixel draws it");
+	ExpectColor(At(frame, 22, 9), own.r, own.g, own.b, "Own, the last pixel: as shading pixel draws it");
+	SDL_FreeSurface(frame);
 }
 
 TEST(HdTest, APillarDrawsItsArtForThePositionWhenThePackHasSome)
