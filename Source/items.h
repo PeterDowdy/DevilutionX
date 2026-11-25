@@ -505,7 +505,7 @@ uint8_t GetOutlineColor(const Item &item, bool checkReq);
  */
 hd::ItemGraphic HdItemGraphic(const Item &item, bool dropped);
 /**
- * @brief The HD layer's scope for drawing a hero: the art of the weapon it holds (see hd.hpp). Made from the hero's gear alone, which every
+ * @brief The HD layer's scope for drawing a hero: the art of the weapon and shield it holds (see hd.hpp). Made from the hero's gear alone, which every
  * client in a game knows alike, so all of them draw a hero with the same art. Also notes what the hero holds (CalcPlrInv).
  */
 hd::HeldItem HdHeldItem(const Player &player);

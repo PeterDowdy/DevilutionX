@@ -123,6 +123,7 @@ void LimitFrameRate()
 void dx_init()
 {
 	hd::Init();
+	hd::SetHeroArt(static_cast<hd::HeroArt>(*GetOptions().Graphics.heroArt));
 #ifndef USE_SDL1
 	SDL_RaiseWindow(ghMainWnd);
 	SDL_ShowWindow(ghMainWnd);
