@@ -12,6 +12,7 @@
 
 #include "engine/render/dun_render.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 
@@ -137,6 +138,31 @@ DVL_ALWAYS_INLINE void HdMarkLit(const uint8_t *dst, const uint8_t *src, unsigne
 	}
 }
 
+/**
+ * hd::MarkBlend for a see-through line just drawn and marked: the index each pixel's art was lit to (what the opaque line writes), which the HD
+ * layer grades the art by before it blends it over what was behind (hd.hpp, "See-through").
+ */
+template <LightType Light>
+DVL_ALWAYS_INLINE void HdMarkBlended(const uint8_t *dst, const uint8_t *src, unsigned n, [[maybe_unused]] const uint8_t *tbl, [[maybe_unused]] const Lightmap *lightmap)
+{
+	if (!hd::TrackBlend) return;
+	uint8_t lit[256];
+	n = std::min(n, 256U); // (a line of a tile is 32 pixels at most)
+	if constexpr (Light == LightType::FullyDark) {
+		std::fill_n(lit, n, 0);
+	} else if constexpr (Light == LightType::FullyLit) {
+		std::copy_n(src, n, lit);
+	} else if constexpr (Light == LightType::PartiallyLit) {
+		for (unsigned i = 0; i < n; ++i)
+			lit[i] = tbl[src[i]];
+	} else {
+		const uint8_t *light = lightmap->getLightingAt(dst);
+		for (unsigned i = 0; i < n; ++i)
+			lit[i] = lightmap->adjustColor(src[i], light[i]);
+	}
+	hd::MarkBlend(dst, lit, n);
+}
+
 template <LightType Light>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineOpaque(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, const Lightmap *lightmap);
 
@@ -187,29 +213,37 @@ DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent(uint8_t *DVL_REST
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyDark>(uint8_t *DVL_RESTRICT dst, [[maybe_unused]] const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
+	hd::BeforeBlend(dst, n);
 	BlitFillBlended(dst, n, 0);
 	HdMarkLit<LightType::FullyDark>(dst, src, n, tbl, lightmap);
+	HdMarkBlended<LightType::FullyDark>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::FullyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, [[maybe_unused]] const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
+	hd::BeforeBlend(dst, n);
 	BlitPixelsBlended(dst, src, n);
 	HdMarkLit<LightType::FullyLit>(dst, src, n, tbl, lightmap);
+	HdMarkBlended<LightType::FullyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PartiallyLit>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, [[maybe_unused]] const Lightmap *lightmap)
 {
+	hd::BeforeBlend(dst, n);
 	BlitPixelsBlendedWithMap(dst, src, n, tbl);
 	HdMarkLit<LightType::PartiallyLit>(dst, src, n, tbl, lightmap);
+	HdMarkBlended<LightType::PartiallyLit>(dst, src, n, tbl, lightmap);
 }
 
 template <>
 DVL_ALWAYS_INLINE DVL_ATTRIBUTE_HOT void RenderLineTransparent<LightType::PerPixel>(uint8_t *DVL_RESTRICT dst, const uint8_t *DVL_RESTRICT src, uint_fast8_t n, const uint8_t *DVL_RESTRICT tbl, const Lightmap *lightmap)
 {
+	hd::BeforeBlend(dst, n);
 	BlitPixelsBlendedWithLightmap(dst, src, n, *lightmap);
 	HdMarkLit<LightType::PerPixel>(dst, src, n, tbl, lightmap);
+	HdMarkBlended<LightType::PerPixel>(dst, src, n, tbl, lightmap);
 }
 #else // DEBUG_RENDER_COLOR
 template <LightType Light>
