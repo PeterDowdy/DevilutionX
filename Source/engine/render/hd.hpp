@@ -134,6 +134,32 @@
  * pixel (clipped away at the edge of the view). Without "silhouette free" a box only says where the picture sits. Effect layers stay
  * relative to the sprite's top-left. A frame without the chunk is drawn exactly as before.
  *
+ * Props ("prop/..."): a level's free-standing things (a plant, a tree, stairs, a fence) drawn whole from a 3D render, not bound to the 1997
+ * pillar's shape, and in front of or behind heroes, monsters, missiles and objects by where they stand. A pillar's art ("tile/...") is drawn only
+ * inside the 1997 pillar's pixels, and the 1997 pixels decide what covers a hero; a model that doesn't match the 1997 outline is then cut off
+ * where it goes beyond it, and floor shows where the 1997 prop was drawn and the model isn't. A prop is a picture of its own:
+ *   prop/<tileset>/<pillar>.png               the prop of the pillar <pillar> (.min entry, as for tile/...), and per position, as tiles have
+ *   prop/<tileset>/<pillar>@<x>-<y>.png       ("tileperiod") or
+ *   prop/<tileset>/<pillar>@h<k>.png          ("tilehash"); a position without one of its own shows the pillar's prop.
+ * Its tEXt chunk "hdprop" = "<dx> <dy> <w> <h> [foot <fx> <fy>] [keep]" says where it goes: the rectangle the picture covers, in original pixels
+ * relative to the top-left of the pillar's own picture (tile/..., 64 x 32 * rows: the pillar's square is the diamond in its bottom 32 rows),
+ * any size and anywhere (the picture is sampled proportionally; at scale N it is w * N x h * N to be pixel for pixel). Words after these
+ * are for tools and ignored. "foot": the point the prop stands on, in the same coordinates (default: the centre of the pillar's own square):
+ * the prop is drawn in the place of the dungeon square under that point in the game's back-to-front drawing of the level (DrawDungeon, square
+ * by square): after the squares behind it and everything standing on them, before what stands on its square or in front of it. So a hero
+ * behind the prop is covered by it as far as it reaches, one in front is drawn over it; where it is transparent what is behind it shows
+ * (in HD, blended by its alpha; one layer deep, as for free silhouettes), and foliage drawn later goes under it. A big prop that a hero walks
+ * into (stairs under a ribcage) is best cut into one prop per square, each picture holding the part of the model standing over its square.
+ * "keep": the pillar is drawn as before (its art inside its 1997 shape) and the prop over it in its place (a lamp on a wall). Without it the
+ * pillar's 1997 pieces above its floor are not drawn at all (nor its foliage), only its floor diamond with its tile art (in the floor's pass,
+ * so what stands behind it is not cut off there): the prop alone stands on the square. hd.txt "propfloor <tileset> <pillar> ..." (a pillar,
+ * or a range "304-307") does the same for pillars without a prop of their own (the other squares of a prop drawn whole from one).
+ * Lighting: the prop is lit as the floor it stands on: by the light of its foot's square, or with per-pixel lighting column by column by the
+ * light of the floor at its foot's row; it is graded by that light level's grade of its tileset's reference palette, as the pillars are. The
+ * game's 8-bit frame shows it too: each of its pixels the colour of the reference palette nearest its art's (no colour the level animates),
+ * through the light table. See-through: a prop is drawn half over what is behind it while its pillar would be (a wall near the hero), else
+ * opaque. A tileset without any "prop/" file or "propfloor" line draws exactly as before.
+ *
  * Memory: an image is loaded when a sprite frame (or pillar) is first drawn with it, and belongs to the sprite data it was registered for
  * (RegisterSprites): when the game frees that data (a hero's graphics swapped for another weapon or armour, a level's monsters, missiles),
  * the images only it held are let go, as soon as no pixel of the screen (or of a tracked off-screen buffer, or an effect layer) still shows
@@ -149,6 +175,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "engine/clx_sprite.hpp"
 #include "engine/point.hpp"
@@ -447,8 +474,8 @@ void NewScene();
  */
 void ForgetView(const Surface &out);
 
-/** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6". */
-void SetTileset(std::string_view name);
+/** The level tileset whose pillars DrawCell draws: "town", "hftown", "l1".."l6"; ``rows``: its pillars' rows of 32 pixels (for its props). */
+void SetTileset(std::string_view name, int rows = 0);
 
 /**
  * The palette indices ``first`` to ``last`` (none when first > last) are animated by the level (CycledColors): pixels whose art or drawn index
@@ -495,6 +522,70 @@ public:
 	PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows, Point tile = { -1, -1 });
 	~PillarScope();
 };
+
+/** A prop ("prop/...", see "Props" at the top of this file): where it is drawn, relative to its pillar. */
+struct Prop {
+	std::string file;
+	int dx = 0, dy = 0, w = 0, h = 0; ///< the rectangle its picture covers, original pixels from the top-left of its pillar's picture
+	int footX = 0, footY = 0;          ///< the point it stands on, the same way
+	Displacement foot;                 ///< the square under that point, from the pillar's own square (dPiece coordinates)
+	bool keep = false;                 ///< the pillar is drawn as well
+};
+
+/** Reads "hdprop" text (see "Props" at the top of this file) for a pillar of ``rows`` rows. False when it doesn't say where the prop goes. */
+bool ParseProp(std::string_view text, int rows, Prop &prop);
+
+/** The square under the point (``x``, ``y``) of a pillar's picture of ``rows`` rows, from the pillar's own square. */
+Displacement SquareUnder(int x, int y, int rows);
+
+/** Whether the tileset in use has props, or pillars whose pieces it leaves to props: without, nothing below is ever needed. */
+bool HasProps();
+
+/** Whether the pillar ``pillar`` of the tileset in use is drawn as its floor diamond alone, what stands on it left to props. */
+bool PropFloorOnly(uint16_t pillar);
+
+/** The squares, from their pillars, that the props of the tileset in use stand on (Prop::foot, each once). */
+const std::vector<Displacement> &PropFeet();
+
+/**
+ * The prop of the pillar ``pillar`` drawn at the dungeon position ``tile`` (its art for that position first) when it stands on the square
+ * ``foot`` from it; null when there is none, or it stands elsewhere.
+ */
+const Prop *PropAt(uint16_t pillar, Point tile, Displacement foot);
+
+/**
+ * Draws the prop ``prop`` of the pillar whose picture's top-left is ``pillarTopLeft`` (in ``out``) into ``out``, and its HD art: its pixels
+ * through the light table of ``levels[i]`` (light level of its picture's column i; ``lightTables``: ``numLevels`` tables of 256 one after
+ * the other), half over what is behind them through ``blend`` (paletteTransparencyLookup) unless it is null.
+ */
+void DrawProp(const Surface &out, const Prop &prop, Point pillarTopLeft, const uint8_t *levels, const uint8_t *lightTables, int numLevels,
+    const uint8_t (*blend)[256] = nullptr);
+
+/**
+ * While it lives (inside the pillar's PillarScope), the pillar drawn at ``bottomLeft`` is drawn as its floor diamond alone (PropFloorOnly):
+ * what its pieces draw outside the diamond in its bottom 32 rows is put back as it was, its HD art included; and the part of the diamond
+ * its own pieces leave undrawn (the 1997 art had other pillars' pieces cover it, which are props' now) is drawn from its HD art, through
+ * ``tbl`` (its light table), as its pieces would be.
+ */
+class FloorOnlyScope {
+public:
+	FloorOnlyScope(const Surface &out, Point bottomLeft, const uint8_t *tbl = nullptr);
+	~FloorOnlyScope();
+	FloorOnlyScope(const FloorOnlyScope &) = delete;
+	FloorOnlyScope &operator=(const FloorOnlyScope &) = delete;
+
+private:
+	const Surface &out_;
+	int x0_, y0_;
+	const uint8_t *tbl_;
+	uint32_t image_, serial_;
+	int16_t left_, top_;
+	std::vector<uint8_t> idx_;
+	std::vector<PixelProvenance> prov_;
+};
+
+/** Whether the pixel (``x``, ``k`` rows up from the bottom row) of a pillar's bottom 32 rows is inside its floor diamond (x 0..63). */
+bool InFloorDiamond(int x, int k);
 
 /** While it lives, the pillar draw in progress is a floor tile's foliage (see TrackUnder). */
 class FoliageScope {

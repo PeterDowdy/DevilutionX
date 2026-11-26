@@ -67,6 +67,7 @@ struct HdImage {
 	bool figure = false;  ///< a monster's, hero's or towner's art (OverEarlierFigure)
 	bool monster = false; ///< a monster's art (MinBright)
 	std::vector<uint8_t> reach; ///< per original pixel: the art is opaque somewhere in its block (free silhouettes; made when first needed)
+	std::vector<uint8_t> propSource; ///< a prop's: per original pixel, the reference palette's colour nearest its art there, 0 where it has none (PropSource)
 	uint32_t fx = 0;            ///< a sprite frame's effect layer ("fx/..."), an image of its own; looked up when the frame is first drawn into the game view
 	bool fxLooked = false;
 	int fxDx = 0; ///< an effect layer: where its rectangle (loW x loH original pixels) starts, relative to its sprite's top-left
@@ -162,6 +163,20 @@ std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
 std::string Tileset;
 std::unordered_map<std::string, int> TilePeriods; ///< hd.txt "tileperiod <tileset> <P>": pillars may have art per position modulo P
 std::unordered_map<std::string, int> TileHashes;  ///< hd.txt "tilehash <tileset> <K>": pillars may have K variants picked by position
+/** Props (hd.hpp, "Props"): hd.txt "propfloor <tileset> <pillar>|<a>-<b> ...", by tileset. */
+std::unordered_map<std::string, std::vector<std::pair<int, int>>> PropFloorLines;
+/** The props of the tileset in use, by file (SetTileset reads them; read-only while the level draws). */
+std::unordered_map<std::string, Prop> Props;
+constexpr uint8_t PropHas = 1;      ///< PropFlags: the pillar has a prop
+constexpr uint8_t PropClears = 2;   ///< its pieces above its floor are not drawn
+constexpr uint8_t PropVariants = 4; ///< it has props for some positions
+std::vector<uint8_t> PropFlags;     ///< by pillar
+std::vector<const Prop *> PropOwn;  ///< by pillar: its own prop (no position's), if any
+std::vector<Displacement> PropFeetNow;
+bool PropsNow = false;
+std::string PropsTileset; ///< what PropFlags were made for ("<tileset>/<rows>"); cleared by Init
+int TilesetRows = 0;      ///< SetTileset's rows, for Init to read the props again of a tileset set before the pack loaded
+void ReadProps(std::string_view name, int rows);
 thread_local std::string ItemArt; ///< "c057" while an ItemGraphic lives: the dropped item's own art is looked for first
 
 /** One unique item's art: the pack file name it is under, worked out when the item is first drawn (and again if its table entry changed). */
@@ -527,6 +542,7 @@ bool LoadImage(const std::string &file, const std::string &palette, HdImage &img
 		img.hasRef = static_cast<bool>(pal.read(reinterpret_cast<char *>(img.ref.data()), img.ref.size()));
 	}
 	img.reach.clear();
+	img.propSource.clear();
 	img.bytes = 0;
 	AddBytes(img, img.px.size() * sizeof(uint32_t) + img.idx.size() + img.colours.size() * sizeof(uint32_t));
 	img.resident = true;
@@ -544,6 +560,7 @@ void Unload(HdImage &img)
 	std::vector<uint8_t>().swap(img.idx);
 	std::vector<uint32_t>().swap(img.colours);
 	std::vector<uint8_t>().swap(img.reach);
+	std::vector<uint8_t>().swap(img.propSource);
 	img.resident = false;
 	++UnloadCount;
 }
@@ -625,7 +642,7 @@ uint32_t ImageId(const std::string &file, int loW, int loH)
 			img.palette = key.first->second;
 			PaletteCount = static_cast<uint32_t>(PaletteKeys.size());
 			const bool held = HeroArtFile(file); // a hero's art (held or pair)
-			for (const char *world : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/", "sprite/items/", "sprite/objects/", "sprite/missiles/", "sprite/levels/", "sprite/nlevels/", "tile/" })
+			for (const char *world : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/", "sprite/items/", "sprite/objects/", "sprite/missiles/", "sprite/levels/", "sprite/nlevels/", "tile/", "prop/" })
 				img.world = img.world || held || file.rfind(world, 0) == 0;
 			for (const char *figure : { "sprite/monsters/", "sprite/plrgfx/", "sprite/towners/" })
 				img.figure = img.figure || held || file.rfind(figure, 0) == 0;
@@ -2119,6 +2136,16 @@ void Init()
 	MinBright = 0;
 	TilePeriods.clear();
 	TileHashes.clear();
+	PropFloorLines.clear();
+	{
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
+		PropsTileset.clear(); // read again at the next SetTileset
+		Props.clear();
+		PropFlags.clear();
+		PropOwn.clear();
+		PropFeetNow.clear();
+		PropsNow = false;
+	}
 	BudgetBytes = DefaultBudgetMb << 20;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
@@ -2154,6 +2181,16 @@ void Init()
 			std::string tileset;
 			int n = 0;
 			if (words >> tileset >> n && n > 0) (kind == "tileperiod" ? TilePeriods : TileHashes)[tileset] = n;
+		} else if (kind == "propfloor") {
+			std::string tileset, range;
+			words >> tileset;
+			while (words >> range) {
+				int a = -1, b = -1;
+				const size_t dash = range.find('-');
+				a = std::atoi(range.c_str());
+				b = dash == std::string::npos ? a : std::atoi(range.c_str() + dash + 1);
+				if (a >= 0 && b >= a && b < 65536) PropFloorLines[tileset].emplace_back(a, b);
+			}
 		} else if (kind == "held") {
 			words >> held;
 		} else if (kind == "pairs") {
@@ -2208,6 +2245,12 @@ void Init()
 	if (const char *budget = std::getenv("DEVILUTIONX_HD_MEMORY_MB"); budget != nullptr && *budget != '\0') BudgetBytes = static_cast<size_t>(std::max(0.0, std::atof(budget)) * (1 << 20));
 	if (const char *log = std::getenv("DEVILUTIONX_HD_MEMLOG"); log != nullptr) MemLog = log;
 	Active = true;
+	{
+		// a level may have set its tileset before the pack loaded (or another pack): its props are this pack's
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
+		PropsTileset = Tileset + "/" + std::to_string(TilesetRows);
+		ReadProps(Tileset, TilesetRows);
+	}
 	SurfaceBlitHook = &CopyProvenance;
 	if (ClxFreeHook == nullptr) {
 		ClxFreeHook = [](const uint8_t *data) { ForgetSprites(data); };
@@ -2529,7 +2572,58 @@ void ForgetOffscreen(SDL_Surface *buffer)
 	Offscreens.erase(std::remove_if(Offscreens.begin(), Offscreens.end(), [buffer](const Offscreen &o) { return o.surface == buffer; }), Offscreens.end());
 }
 
-void SetTileset(std::string_view name)
+namespace {
+
+/** Reads the props of the tileset ``name`` (pillars of ``rows`` rows) from the pack: PropFlags, PropOwn, PropFeetNow. Under ImagesMutex. */
+void ReadProps(std::string_view name, int rows)
+{
+	Props.clear();
+	PropFlags.clear();
+	PropOwn.clear();
+	PropFeetNow.clear();
+	PropsNow = false;
+	if (!Active || name.empty()) return;
+	const std::string prefix = "prop/" + std::string(name) + "/";
+	const auto flag = [](size_t pillar, uint8_t bits) {
+		if (pillar >= PropFlags.size()) PropFlags.resize(pillar + 1, 0);
+		PropFlags[pillar] |= bits;
+	};
+	for (const auto &[file, palette] : Manifest) {
+		if (file.compare(0, prefix.size(), prefix) != 0) continue;
+		const char *stem = file.c_str() + prefix.size();
+		char *end = nullptr;
+		const unsigned long pillar = std::strtoul(stem, &end, 10);
+		if (end == stem || pillar >= 65536 || (*end != '@' && std::strcmp(end, ".png") != 0)) continue;
+		const std::string text = ReadPngText(PathOf(file), "hdprop");
+		Prop prop;
+		if (!ParseProp(text, rows, prop)) {
+			LogError("HD: {} doesn't say where it goes (tEXt hdprop \"{}\")", file, text);
+			continue;
+		}
+		prop.file = file;
+		const Prop &kept = Props.emplace(file, std::move(prop)).first->second;
+		flag(pillar, PropHas | (kept.keep ? 0 : PropClears) | (*end == '@' ? PropVariants : 0));
+		if (*end != '@') {
+			if (pillar >= PropOwn.size()) PropOwn.resize(pillar + 1, nullptr);
+			PropOwn[pillar] = &kept;
+		}
+		if (std::find(PropFeetNow.begin(), PropFeetNow.end(), kept.foot) == PropFeetNow.end()) PropFeetNow.push_back(kept.foot);
+	}
+	if (const auto lines = PropFloorLines.find(std::string(name)); lines != PropFloorLines.end())
+		for (const auto &[a, b] : lines->second)
+			for (int pillar = a; pillar <= b; ++pillar)
+				flag(static_cast<size_t>(pillar), PropClears);
+	// the same order every time (the manifest's isn't): props whose pillars are further back first
+	std::sort(PropFeetNow.begin(), PropFeetNow.end(), [](Displacement a, Displacement b) {
+		return a.deltaX + a.deltaY != b.deltaX + b.deltaY ? a.deltaX + a.deltaY > b.deltaX + b.deltaY : a.deltaX > b.deltaX;
+	});
+	PropsNow = !PropFlags.empty();
+	if (PropsNow) LogInfo("HD: {} props for {} ({} squares they stand on)", Props.size(), name, PropFeetNow.size());
+}
+
+} // namespace
+
+void SetTileset(std::string_view name, int rows)
 {
 	const std::lock_guard<std::mutex> lock(ImagesMutex);
 	if (name != Tileset) { // the pillars of the last tileset are no longer drawn
@@ -2538,6 +2632,12 @@ void SetTileset(std::string_view name)
 		TileHeld.clear();
 	}
 	Tileset = name;
+	TilesetRows = rows;
+	const std::string key = std::string(name) + "/" + std::to_string(rows);
+	if (key != PropsTileset) {
+		PropsTileset = key;
+		ReadProps(name, rows);
+	}
 }
 
 uint8_t LightLevelOf(const uint8_t *table)
@@ -2725,10 +2825,13 @@ SpriteScope::~SpriteScope()
 	End();
 }
 
-std::string TileVariantFile(std::string_view tileset, uint16_t pillar, Point tile, int period, int hashes)
+namespace {
+
+/** TileVariantFile for art under ``kind`` ("tile", "prop"). */
+std::string VariantFile(std::string_view kind, std::string_view tileset, uint16_t pillar, Point tile, int period, int hashes)
 {
 	if (tile.x < 0 || tile.y < 0) return {};
-	const std::string stem = "tile/" + std::string(tileset) + "/" + std::to_string(pillar) + "@";
+	const std::string stem = std::string(kind) + "/" + std::string(tileset) + "/" + std::to_string(pillar) + "@";
 	if (period > 0) return stem + std::to_string(tile.x % period) + "-" + std::to_string(tile.y % period) + ".png";
 	if (hashes > 0) {
 		uint32_t h = static_cast<uint32_t>(tile.x) * 73856093U ^ static_cast<uint32_t>(tile.y) * 19349663U;
@@ -2738,6 +2841,13 @@ std::string TileVariantFile(std::string_view tileset, uint16_t pillar, Point til
 		return stem + "h" + std::to_string(h % static_cast<uint32_t>(hashes)) + ".png";
 	}
 	return {};
+}
+
+} // namespace
+
+std::string TileVariantFile(std::string_view tileset, uint16_t pillar, Point tile, int period, int hashes)
+{
+	return VariantFile("tile", tileset, pillar, tile, period, hashes);
 }
 
 PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, int rows, Point tile)
@@ -2762,6 +2872,281 @@ PillarScope::PillarScope(const Surface &out, Point bottomLeft, uint16_t pillar, 
 PillarScope::~PillarScope()
 {
 	End();
+}
+
+bool ParseProp(std::string_view text, int rows, Prop &prop)
+{
+	constexpr int Most = 4096;
+	rows = std::max(rows, 1);
+	std::istringstream words { std::string(text) };
+	if (!(words >> prop.dx >> prop.dy >> prop.w >> prop.h) || prop.w <= 0 || prop.h <= 0 || prop.w > Most || prop.h > Most || std::abs(prop.dx) > Most
+	    || std::abs(prop.dy) > Most)
+		return false;
+	prop.footX = 32; // the centre of the pillar's own square
+	prop.footY = 32 * rows - 16;
+	prop.keep = false;
+	std::string word;
+	while (words >> word) {
+		if (word == "keep") {
+			prop.keep = true;
+		} else if (word == "foot") {
+			if (!(words >> prop.footX >> prop.footY) || std::abs(prop.footX) > Most || std::abs(prop.footY) > Most) return false;
+		}
+	}
+	prop.foot = SquareUnder(prop.footX, prop.footY, rows);
+	return true;
+}
+
+Displacement SquareUnder(int x, int y, int rows)
+{
+	// from the centre of the pillar's own square: one square on x is (32, 16) on screen, one on y (-32, 16)
+	const double sx = (x - 32) / 32.0;
+	const double sy = (y - (32 * std::max(rows, 1) - 16)) / 16.0;
+	return { static_cast<int>(std::floor((sy + sx) / 2 + 0.5)), static_cast<int>(std::floor((sy - sx) / 2 + 0.5)) };
+}
+
+bool HasProps()
+{
+	return PropsNow;
+}
+
+bool PropFloorOnly(uint16_t pillar)
+{
+	return pillar < PropFlags.size() && (PropFlags[pillar] & PropClears) != 0;
+}
+
+const std::vector<Displacement> &PropFeet()
+{
+	return PropFeetNow;
+}
+
+const Prop *PropAt(uint16_t pillar, Point tile, Displacement foot)
+{
+	if (pillar >= PropFlags.size() || (PropFlags[pillar] & PropHas) == 0) return nullptr;
+	const Prop *prop = pillar < PropOwn.size() ? PropOwn[pillar] : nullptr;
+	if ((PropFlags[pillar] & PropVariants) != 0) {
+		const auto period = TilePeriods.find(Tileset);
+		const auto hashes = TileHashes.find(Tileset);
+		const std::string variant = VariantFile("prop", Tileset, pillar, tile, period == TilePeriods.end() ? 0 : period->second, hashes == TileHashes.end() ? 0 : hashes->second);
+		if (const auto found = Props.find(variant); found != Props.end()) prop = &found->second;
+	}
+	return prop != nullptr && prop->foot == foot ? prop : nullptr;
+}
+
+namespace {
+
+/**
+ * A prop's 8-bit picture (HdImage::propSource): per original pixel where its art is opaque somewhere in the pixel's block (alpha 32 or more, as
+ * ComputeReach), the colour of its reference palette nearest the art's mean there (by alpha), leaving out 0 and the colours the level animates;
+ * 0 elsewhere. Without a reference palette, the PalSurface's.
+ */
+void PropSource(HdImage &img)
+{
+	const int n = Scale;
+	const uint16_t cycled = CycledRange.load(std::memory_order_relaxed);
+	const int cycledFirst = cycled & 0xFF, cycledLast = cycled >> 8;
+	std::array<uint8_t, 768> palette {};
+	if (img.hasRef) {
+		palette = img.ref;
+	} else if (Target != nullptr && Target->format->palette != nullptr) {
+		for (int i = 0; i < 256 && i < Target->format->palette->ncolors; ++i) {
+			const SDL_Color c = Target->format->palette->colors[i];
+			palette[i * 3] = c.r;
+			palette[i * 3 + 1] = c.g;
+			palette[i * 3 + 2] = c.b;
+		}
+	}
+	std::unordered_map<uint32_t, uint8_t> nearest;
+	const auto nearestOf = [&](uint32_t rgb) {
+		const auto found = nearest.find(rgb);
+		if (found != nearest.end()) return found->second;
+		const int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+		int best = 1, bestD = 1 << 30;
+		for (int i = 1; i < 256; ++i) {
+			if (i >= cycledFirst && i <= cycledLast) continue;
+			const int dr = palette[i * 3] - r, dg = palette[i * 3 + 1] - g, db = palette[i * 3 + 2] - b;
+			const int d = dr * dr * 2 + dg * dg * 4 + db * db * 3;
+			if (d < bestD) {
+				bestD = d;
+				best = i;
+			}
+		}
+		nearest.emplace(rgb, static_cast<uint8_t>(best));
+		return static_cast<uint8_t>(best);
+	};
+	img.propSource.assign(static_cast<size_t>(img.loW) * img.loH, 0);
+	for (int ly = 0; ly < img.loH; ++ly) {
+		for (int lx = 0; lx < img.loW; ++lx) {
+			uint32_t most = 0, sumA = 0, sumR = 0, sumG = 0, sumB = 0;
+			for (int j = 0; j < n; ++j) {
+				const int v = std::min(img.h - 1, (ly * n + j) * img.h / (img.loH * n));
+				for (int i = 0; i < n; ++i) {
+					const int u = std::min(img.w - 1, (lx * n + i) * img.w / (img.loW * n));
+					const uint32_t c = Pixel(img, static_cast<size_t>(v) * img.w + u);
+					const uint32_t a = c >> 24;
+					most = std::max(most, a);
+					sumA += a;
+					sumR += ((c >> 16) & 0xFF) * a;
+					sumG += ((c >> 8) & 0xFF) * a;
+					sumB += (c & 0xFF) * a;
+				}
+			}
+			if (most < 32) continue;
+			const uint32_t rgb = ((sumR / sumA) << 16) | ((sumG / sumA) << 8) | (sumB / sumA);
+			img.propSource[static_cast<size_t>(ly) * img.loW + lx] = nearestOf(rgb);
+		}
+	}
+	AddBytes(img, img.propSource.size());
+}
+
+} // namespace
+
+void DrawProp(const Surface &out, const Prop &prop, Point pillarTopLeft, const uint8_t *levels, const uint8_t *lightTables, int numLevels,
+    const uint8_t (*blend)[256])
+{
+	if (!Active || out.surface == nullptr || levels == nullptr || lightTables == nullptr || numLevels <= 0) return;
+	uint32_t image = 0;
+	{
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
+		image = ImageId(prop.file, prop.w, prop.h);
+		if (image != 0 && Images[image].w == 0) image = 0;
+		if (image == 0) return;
+		if (TileHeld.insert(image).second) Hold(image); // the tileset holds its props as it holds its pillars' art
+		if (Images[image].propSource.empty()) PropSource(Images[image]);
+	}
+	const HdImage &img = Images[image];
+	const int left = out.region.x + pillarTopLeft.x + prop.dx;
+	const int top = out.region.y + pillarTopLeft.y + prop.dy;
+	const int x0 = std::max({ left, out.region.x, 0 });
+	const int y0 = std::max({ top, out.region.y, 0 });
+	const int x1 = std::min({ left + img.loW, out.region.x + out.region.w, out.surface->w });
+	const int y1 = std::min({ top + img.loH, out.region.y + out.region.h, out.surface->h });
+	if (x0 >= x1 || y0 >= y1) return;
+	const bool tracked = out.surface == Target && EnsurePlane();
+	if (tracked) {
+		if (BehindProv.size() != Plane.size()) {
+			BehindProv.assign(Plane.size(), PixelProvenance {});
+			BehindIdx.assign(Plane.size(), 0);
+		}
+		if (blend != nullptr && BlendLit.size() != Plane.size()) BlendLit.assign(Plane.size(), 0);
+	}
+	const uint32_t serial = tracked ? ++NextSerial : 0;
+	const uint8_t shade = PixelShading ? ShadePixel : ShadeLevel;
+	auto *pixels = static_cast<uint8_t *>(out.surface->pixels);
+	const int pitch = out.surface->pitch;
+	for (int y = y0; y < y1; ++y) {
+		const uint8_t *sources = &img.propSource[static_cast<size_t>(y - top) * img.loW];
+		for (int x = x0; x < x1; ++x) {
+			const uint8_t source = sources[x - left];
+			if (source == 0) continue;
+			const int level = std::min<int>(levels[x - left], numLevels - 1);
+			const uint8_t lit = lightTables[static_cast<size_t>(level) * 256 + source];
+			const size_t at = static_cast<size_t>(y) * pitch + x;
+			const uint8_t written = blend != nullptr ? blend[pixels[at]][lit] : lit;
+			if (tracked) {
+				// what was behind the pixel stays to show where the art is transparent (as under a free silhouette), or half behind it
+				PixelProvenance behind = Plane[at];
+				uint8_t index = pixels[at];
+				if (behind.blend != 0) { // a blended pixel behind: its art as drawn opaque (one layer deep), as KeepBehind keeps it
+					if (behind.image != 0 && behind.written == index && at < BlendLit.size()) index = behind.written = BlendLit[at];
+					behind.blend = 0;
+				}
+				BehindProv[at] = behind;
+				BehindIdx[at] = index;
+				// free == 2: foliage drawn later goes under it, and it stays out of its light level's grade (which it takes)
+				Plane[at] = { image, static_cast<int16_t>(left), static_cast<int16_t>(top), source, written, 2, 0, shade,
+					static_cast<uint8_t>(std::min(level, 15)), static_cast<uint8_t>(blend != nullptr ? 1 : 0), serial };
+				if (blend != nullptr) BlendLit[at] = lit;
+			}
+			pixels[at] = written;
+		}
+	}
+}
+
+bool InFloorDiamond(int x, int k)
+{
+	if (x < 0 || x >= 64 || k < 0 || k > 30) return false;
+	if (x < 32) return k < 16 ? x >= 30 - 2 * k : x >= 2 * (k - 15);
+	const int r = x - 32;
+	return k < 16 ? r < 2 * k + 2 : r < 32 - 2 * (k - 15);
+}
+
+FloorOnlyScope::FloorOnlyScope(const Surface &out, Point bottomLeft, const uint8_t *tbl)
+    : out_(out)
+    , x0_(out.region.x + bottomLeft.x)
+    , y0_(out.region.y + bottomLeft.y - 31)
+    , tbl_(tbl)
+    , image_(TrackImage)
+    , serial_(TrackSerial)
+    , left_(TrackLeft)
+    , top_(TrackTop)
+{
+	if (out.surface == nullptr) return;
+	const bool tracked = Active && out.surface == Target && EnsurePlane() && TrackPlane == Plane.data();
+	idx_.resize(64 * 32);
+	if (tracked) prov_.resize(64 * 32);
+	const auto *pixels = static_cast<const uint8_t *>(out.surface->pixels);
+	for (int j = 0; j < 32; ++j) {
+		const int y = y0_ + j;
+		if (y < 0 || y >= out.surface->h) continue;
+		for (int i = 0; i < 64; ++i) {
+			const int x = x0_ + i;
+			if (x < 0 || x >= out.surface->w) continue;
+			const size_t at = static_cast<size_t>(y) * out.surface->pitch + x;
+			idx_[j * 64 + i] = pixels[at];
+			if (tracked) prov_[j * 64 + i] = Plane[at];
+		}
+	}
+}
+
+FloorOnlyScope::~FloorOnlyScope()
+{
+	if (out_.surface == nullptr || idx_.empty()) return;
+	const bool tracked = !prov_.empty() && out_.surface == Target && Plane.size() == static_cast<size_t>(PlanePitch) * PlaneHeight && PlanePitch == out_.surface->pitch;
+	auto *pixels = static_cast<uint8_t *>(out_.surface->pixels);
+	const HdImage *art = nullptr;
+	if (tracked && tbl_ != nullptr && image_ != 0) {
+		const std::lock_guard<std::mutex> lock(ImagesMutex);
+		HdImage &img = Images[image_];
+		if (img.resident && img.w != 0) {
+			if (img.propSource.empty()) PropSource(img); // (the pillar's art, as a prop's: the reference colours nearest it)
+			art = &img;
+		}
+	}
+	const uint8_t light = LightLevelOf(tbl_);
+	const uint8_t shade = PixelShading ? ShadePixel : ShadeLevel;
+	// the diamond's pixels the pillar's own pieces left undrawn, from its art (left to right within the region: x0_.., the region of out_)
+	const int rx0 = std::max(out_.region.x, 0), ry0 = std::max(out_.region.y, 0);
+	const int rx1 = std::min(out_.region.x + out_.region.w, out_.surface->w), ry1 = std::min(out_.region.y + out_.region.h, out_.surface->h);
+	for (int j = 0; art != nullptr && j < 32; ++j) {
+		const int y = y0_ + j;
+		if (y < ry0 || y >= ry1) continue;
+		const int sy = y - top_;
+		if (sy < 0 || sy >= art->loH) continue;
+		for (int i = 0; i < 64; ++i) {
+			const int x = x0_ + i;
+			if (x < rx0 || x >= rx1 || !InFloorDiamond(i, 31 - j)) continue;
+			const size_t at = static_cast<size_t>(y) * out_.surface->pitch + x;
+			if (Plane[at].serial == serial_) continue; // drawn by its pieces
+			const int sx = x - left_;
+			if (sx < 0 || sx >= art->loW) continue;
+			const uint8_t source = art->propSource[static_cast<size_t>(sy) * art->loW + sx];
+			if (source == 0) continue;
+			pixels[at] = tbl_[source];
+			Plane[at] = { image_, left_, top_, source, tbl_[source], 0, 0, shade, light, 0, serial_ };
+		}
+	}
+	for (int j = 0; j < 32; ++j) {
+		const int y = y0_ + j;
+		if (y < 0 || y >= out_.surface->h) continue;
+		for (int i = 0; i < 64; ++i) {
+			const int x = x0_ + i;
+			if (x < 0 || x >= out_.surface->w || InFloorDiamond(i, 31 - j)) continue;
+			const size_t at = static_cast<size_t>(y) * out_.surface->pitch + x;
+			pixels[at] = idx_[j * 64 + i];
+			if (tracked) Plane[at] = prov_[j * 64 + i];
+		}
+	}
 }
 
 void RequestDump(std::string_view name)
