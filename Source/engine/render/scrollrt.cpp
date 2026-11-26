@@ -75,6 +75,7 @@
 #include "utils/display.h"
 #include "utils/is_of.hpp"
 #include "utils/log.hpp"
+#include "utils/palette_blending.hpp"
 #include "utils/sdl_compat.h"
 #include "utils/sdl_thread.h"
 #include "utils/str_cat.hpp"
@@ -547,6 +548,7 @@ static void DrawDungeon(const Surface & /*out*/, const Lightmap & /*lightmap*/, 
 void DrawCell(const Surface &out, const Lightmap lightmap, Point tilePosition, Point targetBufferPosition, int lightTableIndex)
 {
 	const uint16_t levelPieceId = dPiece[tilePosition.x][tilePosition.y];
+	if (hd::HasProps() && hd::PropFloorOnly(levelPieceId)) return; // what stands on it is the HD pack's props (DrawHdProps); its floor is drawn with the floor
 	const MICROS *pMap = &DPieceMicros[levelPieceId];
 	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2, tilePosition);
 
@@ -707,6 +709,64 @@ void DrawFloorTile(const Surface &out, const Lightmap &lightmap, Point tilePosit
 }
 
 /**
+ * A pillar whose pieces above its floor are left to the HD pack's props (hd::PropFloorOnly): its floor diamond alone, whole, in the floor's
+ * pass, as DrawFloorTile draws a floor's (what stands behind it is not cut off by it). The 1997 art of a prop often leaves part of a square's
+ * diamond to the pieces of the pillars in front of it, which are not drawn now: hd::FloorOnlyScope draws that part from the pillar's art.
+ */
+void DrawPropFloorTile(const Surface &out, const Lightmap &lightmap, Point tilePosition, Point targetBufferPosition)
+{
+	const uint8_t *tbl = LightTables[dLight[tilePosition.x][tilePosition.y]].data();
+	const uint16_t levelPieceId = dPiece[tilePosition.x][tilePosition.y];
+	const hd::PillarScope hdPillar(out, targetBufferPosition, levelPieceId, MicroTileLen / 2, tilePosition);
+	const hd::FloorOnlyScope floorOnly(out, targetBufferPosition, tbl);
+	const bool floor = IsFloor(tilePosition); // its first pieces were made triangles when the level loaded (DrawFloorTile)
+	if (const LevelCelBlock levelCelBlock { DPieceMicros[levelPieceId].mt[0] }; levelCelBlock.hasValue()) {
+		if (floor)
+			RenderTileFrame(out, lightmap, targetBufferPosition, TileType::LeftTriangle, GetDunFrame(pDungeonCels.get(), levelCelBlock.frame()), DunFrameTriangleHeight, MaskType::Solid, tbl);
+		else
+			RenderTile(out, lightmap, targetBufferPosition, pDungeonCels.get(), levelCelBlock, MaskType::Solid, tbl);
+	}
+	if (const LevelCelBlock levelCelBlock { DPieceMicros[levelPieceId].mt[1] }; levelCelBlock.hasValue()) {
+		if (floor)
+			RenderTileFrame(out, lightmap, targetBufferPosition + RightFrameDisplacement, TileType::RightTriangle, GetDunFrame(pDungeonCels.get(), levelCelBlock.frame()), DunFrameTriangleHeight, MaskType::Solid, tbl);
+		else
+			RenderTile(out, lightmap, targetBufferPosition + RightFrameDisplacement, pDungeonCels.get(), levelCelBlock, MaskType::Solid, tbl);
+	}
+}
+
+/**
+ * Draws the HD pack's props that stand on the square ``tilePosition`` (hd.hpp, "Props"), in its place in the back-to-front drawing of the level:
+ * after its pillar, before what stands on it. Each is lit as the floor at its foot (column by column with per-pixel lighting), and drawn
+ * see-through while its own pillar would be.
+ */
+void DrawHdProps(const Surface &out, const Lightmap &lightmap, Point tilePosition, Point targetBufferPosition, int lightTableIndex)
+{
+	const int rows = MicroTileLen / 2;
+	const bool perPixelLighting = *GetOptions().Graphics.perPixelLighting;
+	for (const Displacement foot : hd::PropFeet()) {
+		const Point pillar = tilePosition - foot;
+		if (!InDungeonBounds(pillar)) continue;
+		const hd::Prop *prop = hd::PropAt(dPiece[pillar.x][pillar.y], pillar, foot);
+		if (prop == nullptr) continue;
+		// the top-left of the pillar's picture: its square is ``foot`` squares behind this one
+		const Point topLeft = targetBufferPosition
+		    - Displacement { (foot.deltaX - foot.deltaY) * TILE_WIDTH / 2, (foot.deltaX + foot.deltaY) * TILE_HEIGHT / 2 }
+		    - Displacement { 0, rows * TILE_HEIGHT - 1 };
+		std::array<uint8_t, 4096> levels; // (ParseProp: w <= 4096)
+		const int w = std::min(prop->w, static_cast<int>(levels.size()));
+		if (perPixelLighting && out.w() > 0 && out.h() > 0) {
+			const int footY = std::clamp(topLeft.y + prop->footY, 0, out.h() - 1);
+			for (int i = 0; i < w; ++i)
+				levels[i] = *lightmap.getLightingAt(out.at(std::clamp(topLeft.x + prop->dx + i, 0, out.w() - 1), footY));
+		} else {
+			std::fill_n(levels.begin(), w, static_cast<uint8_t>(lightTableIndex));
+		}
+		const bool seeThrough = TileHasAny(pillar, TileProperties::Transparent) && TransList[dTransVal[pillar.x][pillar.y]];
+		hd::DrawProp(out, *prop, topLeft, levels.data(), LightTables[0].data(), static_cast<int>(LightTables.size()), seeThrough ? paletteTransparencyLookup : nullptr);
+	}
+}
+
+/**
  * @brief Draw item for a given tile
  * @param out Output buffer
  * @param tilePosition dPiece coordinates
@@ -789,6 +849,7 @@ void DrawDungeon(const Surface &out, const Lightmap &lightmap, Point tilePositio
 	const int lightTableIndex = dLight[tilePosition.x][tilePosition.y];
 
 	DrawCell(out, lightmap, tilePosition, targetBufferPosition, lightTableIndex);
+	if (hd::HasProps()) DrawHdProps(out, lightmap, tilePosition, targetBufferPosition, lightTableIndex);
 
 	const int8_t bDead = dCorpse[tilePosition.x][tilePosition.y];
 	const int8_t bMap = dTransVal[tilePosition.x][tilePosition.y];
@@ -963,7 +1024,9 @@ void DrawFloor(const Surface &out, const Lightmap &lightmap, Point tilePosition,
 		for (int j = 0; j < columns; j++, tilePosition += Direction::East, targetBufferPosition.x += TILE_WIDTH) {
 			if (!InDungeonBounds(tilePosition))
 				continue;
-			if (IsFloor(tilePosition)) {
+			if (hd::HasProps() && hd::PropFloorOnly(dPiece[tilePosition.x][tilePosition.y])) {
+				DrawPropFloorTile(out, lightmap, tilePosition, targetBufferPosition);
+			} else if (IsFloor(tilePosition)) {
 				DrawFloorTile(out, lightmap, tilePosition, targetBufferPosition);
 			}
 		}

@@ -55,6 +55,7 @@ bool ScriptRead = false;
 bool LevelLoaded = false;
 bool ShowHero = false;
 bool KeepLight = false;
+bool KeepMonsters = false; ///< "monster": the script's monster stays (frozen: the game doesn't run it)
 std::string Path;
 std::string Palette;
 
@@ -87,7 +88,13 @@ void Settle()
 {
 	if (!KeepLight) std::memset(dLight, 0, sizeof(dLight));
 	if (!ShowHero) std::memset(dPlayer, 0, sizeof(dPlayer));
-	std::memset(dMonster, 0, sizeof(dMonster));
+	if (KeepMonsters) { // the script's monster shows wherever it stands, as everything shows here (DrawMonsterHelper draws it only on a lit square)
+		for (int x = 0; x < MAXDUNX; ++x)
+			for (int y = 0; y < MAXDUNY; ++y)
+				dFlags[x][y] |= DungeonFlag::Lit;
+	} else {
+		std::memset(dMonster, 0, sizeof(dMonster));
+	}
 	std::memset(dObject, 0, sizeof(dObject));
 	ActiveMonsterCount = 0;
 }
@@ -206,6 +213,12 @@ void AfterGameTick()
 		LogInfo("HD showcase: map {} type {} view {},{} (setlevel {} level {} before)", Path, static_cast<int>(setlvltype), ViewPosition.x, ViewPosition.y, setlevel, currlevel);
 		StartNewLvl(*MyPlayer, WM_DIABSETLVL, SL_NONE);
 		LogInfo("HD showcase: loaded (setlevel {} setlvlnum {} level {})", setlevel, static_cast<int>(setlvlnum), currlevel);
+		LevelLoaded = true;
+		Settle();
+	} else if (command.verb == "town") {
+		// town: the hero goes back to town (a level of its own, not a map file)
+		MyPlayer->setLevel(0);
+		StartNewLvl(*MyPlayer, WM_DIABRETOWN, 0);
 		LevelLoaded = true;
 		Settle();
 	} else if (command.verb == "view") {
@@ -338,6 +351,30 @@ void AfterGameTick()
 	} else if (command.verb == "attack" && !command.args.empty()) {
 		const auto direction = static_cast<Direction>(Int(command, 0) & 7);
 		NetSendCmdLoc(MyPlayerId, true, CMD_SATTACKXY, MyPlayer->position.tile + Displacement(direction));
+	} else if (command.verb == "goto" && command.args.size() >= 2) {
+		// goto <x> <y> [direction]: the hero stands on the square at once (the view follows)
+		Player &player = *MyPlayer;
+		const Point at { Int(command, 0), Int(command, 1) };
+		if (InDungeonBounds(player.position.tile)) dPlayer[player.position.tile.x][player.position.tile.y] = 0;
+		player.position.tile = player.position.old = player.position.future = at;
+		StartStand(player, static_cast<Direction>(Int(command, 2) & 7));
+	} else if (command.verb == "monster" && command.args.size() >= 3) {
+		// monster <monster type> <x> <y> [direction]: one monster of that type (MonstersData index) standing on the square, the last one gone
+		std::memset(dMonster, 0, sizeof(dMonster));
+		ActiveMonsterCount = 0;
+		KeepMonsters = true;
+		const auto type = static_cast<_monster_id>(Int(command, 0));
+		const auto typeIndex = AddMonsterType(type, PLACE_SCATTER);
+		if (!typeIndex.has_value()) {
+			LogError("HD showcase: monster type {}: {}", Int(command, 0), typeIndex.error());
+		} else {
+			CMonster &monsterType = LevelMonsterTypes[*typeIndex];
+			if (monsterType.animData == nullptr) {
+				if (const auto loaded = InitMonsterGFX(monsterType); !loaded.has_value()) LogError("HD showcase: monster graphics: {}", loaded.error());
+			}
+			if (monsterType.animData != nullptr) AddMonster({ Int(command, 1), Int(command, 2) }, static_cast<Direction>(Int(command, 3) & 7), *typeIndex, true);
+			LogInfo("HD showcase: monster {} at {},{}", Int(command, 0), Int(command, 1), Int(command, 2));
+		}
 	} else if (command.verb == "walk" && !command.args.empty()) {
 		const auto direction = static_cast<Direction>(Int(command, 0) & 7);
 		NetSendCmdLoc(MyPlayerId, true, CMD_WALKXY, MyPlayer->position.tile + Displacement(direction) * std::max(Int(command, 1), 1));

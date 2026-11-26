@@ -2620,5 +2620,332 @@ TEST(HdTest, APillarDrawsItsArtForThePositionWhenThePackHasSome)
 	SDL_FreeSurface(off);
 }
 
+TEST(HdTest, PropTextSaysWhereThePropGoesAndWhereItStands)
+{
+	hd::Prop prop;
+	ASSERT_TRUE(hd::ParseProp("-26 120 90 61", 6, prop));
+	EXPECT_EQ(prop.dx, -26);
+	EXPECT_EQ(prop.dy, 120);
+	EXPECT_EQ(prop.w, 90);
+	EXPECT_EQ(prop.h, 61);
+	EXPECT_EQ(prop.footX, 32) << "by default it stands on the centre of its own square";
+	EXPECT_EQ(prop.footY, 6 * 32 - 16);
+	EXPECT_EQ(prop.foot, Displacement(0, 0));
+	EXPECT_FALSE(prop.keep);
+
+	ASSERT_TRUE(hd::ParseProp("0 0 64 64 foot 32 208 keep made-by tool", 6, prop)) << "words for tools are ignored";
+	EXPECT_EQ(prop.foot, Displacement(1, 1)) << "32 pixels below its own square's centre: the square in front";
+	EXPECT_TRUE(prop.keep);
+	ASSERT_TRUE(hd::ParseProp("0 0 8 8 foot 64 192", 6, prop));
+	EXPECT_EQ(prop.foot, Displacement(1, 0)) << "(32, 16) from the centre: one square on x";
+	ASSERT_TRUE(hd::ParseProp("0 0 8 8 foot 0 192", 6, prop));
+	EXPECT_EQ(prop.foot, Displacement(0, 1)) << "(-32, 16) from the centre: one square on y";
+	ASSERT_TRUE(hd::ParseProp("0 0 8 8 foot 32 144", 6, prop));
+	EXPECT_EQ(prop.foot, Displacement(-1, -1)) << "32 pixels above: the square behind";
+
+	EXPECT_FALSE(hd::ParseProp("", 6, prop));
+	EXPECT_FALSE(hd::ParseProp("1 2 3", 6, prop));
+	EXPECT_FALSE(hd::ParseProp("0 0 0 10", 6, prop)) << "covers nothing";
+	EXPECT_FALSE(hd::ParseProp("0 0 10 10 foot 3", 6, prop)) << "a foot without its y";
+}
+
+TEST(HdTest, TheFloorDiamondIsWhatTheFloorTrianglesDraw)
+{
+	int inside = 0;
+	for (int k = 0; k < 32; ++k)
+		for (int x = 0; x < 64; ++x)
+			inside += hd::InFloorDiamond(x, k) ? 1 : 0;
+	EXPECT_EQ(inside, 2 * (2 * 16 * 17 / 2 + 2 * 15 * 16 / 2)) << "two triangles of 16 + 15 rows, 2 pixels more each row";
+	EXPECT_TRUE(hd::InFloorDiamond(30, 0)) << "the bottom tip";
+	EXPECT_TRUE(hd::InFloorDiamond(33, 0));
+	EXPECT_FALSE(hd::InFloorDiamond(29, 0));
+	EXPECT_TRUE(hd::InFloorDiamond(0, 15)) << "the widest row";
+	EXPECT_TRUE(hd::InFloorDiamond(63, 15));
+	EXPECT_FALSE(hd::InFloorDiamond(1, 16));
+	EXPECT_TRUE(hd::InFloorDiamond(31, 30)) << "the top tip";
+	EXPECT_FALSE(hd::InFloorDiamond(32, 31));
+}
+
+constexpr SDL_Color PropArt = { 140, 110, 80, 255 };
+
+/**
+ * A prop picture of 16 x 16 original pixels at scale 2 (32 x 32): its left half PropArt, its right half transparent; ``indexed``: an 8-bit
+ * picture with a palette, its right half BackArt (SDL_image writes no transparency for a palette).
+ */
+void WritePropArt(const fs::path &pack, const std::string &file, const std::string &hdprop, bool indexed, std::ofstream &index)
+{
+	fs::create_directories((pack / file).parent_path());
+	SDL_Surface *s;
+	if (indexed) {
+		s = SDL_CreateRGBSurfaceWithFormat(0, 32, 32, 8, SDL_PIXELFORMAT_INDEX8);
+		const SDL_Color colours[2] = { BackArt, PropArt };
+		SDL_SetPaletteColors(s->format->palette, colours, 0, 2);
+		SDL_FillRect(s, nullptr, 0);
+		SDL_Rect left { 0, 0, 16, 32 };
+		SDL_FillRect(s, &left, 1);
+	} else {
+		s = SDL_CreateRGBSurfaceWithFormat(0, 32, 32, 32, SDL_PIXELFORMAT_ARGB8888);
+		SDL_FillRect(s, nullptr, SDL_MapRGBA(s->format, 0, 0, 0, 0));
+		SDL_Rect left { 0, 0, 16, 32 };
+		SDL_FillRect(s, &left, SDL_MapRGBA(s->format, PropArt.r, PropArt.g, PropArt.b, 255));
+	}
+	IMG_SavePNG(s, (pack / file).string().c_str());
+	SDL_FreeSurface(s);
+	AddPngText(pack / file, "hdprop", hdprop);
+	index << "image " << file << " palettes/test.pal\n";
+}
+
+/**
+ * Draws, on a 64 x 64 surface, the prop of pillar 7 of tileset ``name`` (pillars of 2 rows: the picture's top-left is (0, 0)) at (8..23, 8..23):
+ * opaque at x 8..15, transparent at 16..23; and a sprite (4 x 4, art FrontArt) at x 10..13 and one at x 18..21 (y 10..13), before the prop
+ * when ``spritesFirst``, else after it. Returns the HD frame (scale 2), and the 8-bit pixel at (11, 11) in ``low``.
+ */
+SDL_Surface *DrawPropScene(const std::string &name, bool spritesFirst, bool indexed, uint8_t *low = nullptr, const std::string &extra = "", bool keepPack = false)
+{
+	const fs::path pack = fs::temp_directory_path() / ("devilutionx_hd_" + name);
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n" << extra;
+		WriteArt(pack, "sprite/test/a/0.0.png", FrontArt, index);
+		WritePropArt(pack, "prop/" + name + "/7.png", "8 8 16 16", indexed, index); // (a tileset of its own: images are known by their file name)
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	if (!hd::Enabled()) return nullptr;
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 64, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::SetTileset(name, 2);
+	std::vector<uint8_t> a = Sprite();
+	hd::RegisterSpriteList("Test\\A.CL2", 0, ClxSpriteList { a.data() });
+	std::array<uint8_t, 256> identity;
+	for (int i = 0; i < 256; ++i)
+		identity[i] = static_cast<uint8_t>(i);
+	const std::array<uint8_t, 16> levels {};
+	{
+		const Surface out(pal);
+		const auto sprites = [&]() {
+			ClxDraw(out, { 10, 13 }, ClxSpriteList { a.data() }[0]);
+			ClxDraw(out, { 18, 13 }, ClxSpriteList { a.data() }[0]);
+		};
+		if (spritesFirst) sprites();
+		const hd::Prop *prop = hd::PropAt(7, { 5, 5 }, { 0, 0 });
+		if (prop != nullptr) hd::DrawProp(out, *prop, { 0, 0 }, levels.data(), identity.data(), 1);
+		if (!spritesFirst) sprites();
+	}
+	if (low != nullptr) *low = static_cast<uint8_t *>(pal->pixels)[11 * pal->pitch + 11];
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	SDL_FreeSurface(pal);
+	if (!keepPack) {
+		hd::SetTileset("");
+		fs::remove_all(pack);
+	}
+	return frame;
+}
+
+TEST(HdTest, APropIsFoundForItsPillarAndTheSquareItStandsOn)
+{
+	SDL_Surface *frame = DrawPropScene("prop_found", false, false, nullptr, "propfloor prop_found 9-11 13\n", true);
+	ASSERT_NE(frame, nullptr);
+	SDL_FreeSurface(frame);
+	EXPECT_TRUE(hd::HasProps());
+	EXPECT_TRUE(hd::PropFloorOnly(7)) << "a prop without keep: its pillar's pieces above its floor are left to it";
+	EXPECT_FALSE(hd::PropFloorOnly(8));
+	EXPECT_TRUE(hd::PropFloorOnly(9)) << "propfloor, a range";
+	EXPECT_TRUE(hd::PropFloorOnly(11));
+	EXPECT_FALSE(hd::PropFloorOnly(12));
+	EXPECT_TRUE(hd::PropFloorOnly(13));
+	ASSERT_EQ(hd::PropFeet().size(), 1U);
+	EXPECT_EQ(hd::PropFeet()[0], Displacement(0, 0));
+	EXPECT_NE(hd::PropAt(7, { 5, 5 }, { 0, 0 }), nullptr);
+	EXPECT_EQ(hd::PropAt(7, { 5, 5 }, { 1, 0 }), nullptr) << "it stands on its own square, not this one";
+	EXPECT_EQ(hd::PropAt(9, { 5, 5 }, { 0, 0 }), nullptr) << "floor only, no prop";
+	EXPECT_EQ(hd::PropAt(400, { 5, 5 }, { 0, 0 }), nullptr);
+	hd::SetTileset("u", 2);
+	EXPECT_FALSE(hd::HasProps()) << "another tileset: none";
+	EXPECT_EQ(hd::PropAt(7, { 5, 5 }, { 0, 0 }), nullptr);
+	hd::SetTileset("");
+	fs::remove_all(fs::temp_directory_path() / "devilutionx_hd_prop_found");
+}
+
+TEST(HdTest, APropCoversWhatWasDrawnBeforeItAndShowsItWhereItIsTransparent)
+{
+	uint8_t low = 0;
+	SDL_Surface *frame = DrawPropScene("prop_over", true, false, &low);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 2 * 11, 2 * 11), PropArt.r, PropArt.g, PropArt.b, "a sprite behind the prop: covered by it, drawn whole");
+	ExpectColor(At(frame, 2 * 9, 2 * 20), PropArt.r, PropArt.g, PropArt.b, "the prop outside any pillar shape");
+	ExpectColor(At(frame, 2 * 19, 2 * 11), FrontArt.r, FrontArt.g, FrontArt.b, "where the prop is transparent, the sprite behind it");
+	ExpectColor(At(frame, 2 * 30, 2 * 30), Background.r, Background.g, Background.b, "outside it, as it was");
+	EXPECT_NE(low, Own) << "the game's own frame shows the prop over the sprite too";
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, WhatIsDrawnAfterAPropIsDrawnOverIt)
+{
+	SDL_Surface *frame = DrawPropScene("prop_under", false, false);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 2 * 11, 2 * 11), FrontArt.r, FrontArt.g, FrontArt.b, "a sprite in front of the prop: over it");
+	ExpectColor(At(frame, 2 * 9, 2 * 11), PropArt.r, PropArt.g, PropArt.b, "the prop beside it");
+	ExpectColor(At(frame, 2 * 19, 2 * 11), FrontArt.r, FrontArt.g, FrontArt.b, "");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, AnIndexedPropDrawsAsItsFullColourPicture)
+{
+	SDL_Surface *frame = DrawPropScene("prop_indexed", true, true);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 2 * 11, 2 * 11), PropArt.r, PropArt.g, PropArt.b, "8-bit picture with a palette: the same");
+	ExpectColor(At(frame, 2 * 19, 2 * 11), BackArt.r, BackArt.g, BackArt.b, "its other colour, over the sprite there");
+	SDL_FreeSurface(frame);
+}
+
+TEST(HdTest, APropHasArtPerPositionAsPillarsHave)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_prop_variant";
+	fs::remove_all(pack);
+	fs::create_directories(pack / "palettes");
+	{
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : Palette())
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\ntileperiod prop_variant 2\n";
+		WritePropArt(pack, "prop/prop_variant/7.png", "8 8 16 16", false, index);
+		WritePropArt(pack, "prop/prop_variant/7@1-0.png", "4 2 16 16 foot 32 80", false, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	hd::SetTileset("prop_variant", 2);
+	ASSERT_EQ(hd::PropFeet().size(), 2U) << "the variant stands on the square in front";
+	const hd::Prop *own = hd::PropAt(7, { 16, 20 }, { 0, 0 }); // 7@0-0 is not in the pack: its own
+	ASSERT_NE(own, nullptr);
+	EXPECT_EQ(own->dx, 8);
+	EXPECT_EQ(hd::PropAt(7, { 17, 20 }, { 0, 0 }), nullptr) << "at x % 2 = 1, y % 2 = 0 the variant, which stands elsewhere";
+	const hd::Prop *variant = hd::PropAt(7, { 17, 20 }, { 1, 1 });
+	ASSERT_NE(variant, nullptr);
+	EXPECT_EQ(variant->dx, 4);
+	EXPECT_EQ(variant->file, "prop/prop_variant/7@1-0.png");
+	hd::SetTileset("");
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, WithoutPropsNothingIsLeftToThem)
+{
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_no_props";
+	fs::remove_all(pack);
+	fs::create_directories(pack / "palettes");
+	{
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : Palette())
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\n";
+		WriteTileArt(pack, "tile/t/7.png", FrontArt, 128, 64, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	hd::SetTileset("t", 2);
+	EXPECT_FALSE(hd::HasProps()) << "the level draws exactly as before (DrawFloor, DrawCell and DrawDungeon ask this first)";
+	EXPECT_FALSE(hd::PropFloorOnly(7));
+	EXPECT_TRUE(hd::PropFeet().empty());
+	EXPECT_EQ(hd::PropAt(7, { 1, 1 }, { 0, 0 }), nullptr);
+	hd::SetTileset("");
+	fs::remove_all(pack);
+}
+
+TEST(HdTest, AFloorOnlyPillarPutsBackWhatItDrewOutsideItsFloor)
+{
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 64, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	{
+		const Surface out(pal);
+		const hd::FloorOnlyScope floorOnly(out, { 0, 63 });
+		SDL_Rect square { 0, 32, 64, 32 };
+		SDL_FillRect(pal, &square, Own); // the pillar's bottom pieces: their whole squares
+	}
+	const auto at = [pal](int x, int y) { return static_cast<uint8_t *>(pal->pixels)[y * pal->pitch + x]; };
+	EXPECT_EQ(at(32, 48), Own) << "the floor's centre";
+	EXPECT_EQ(at(30, 63), Own) << "its bottom tip";
+	EXPECT_EQ(at(1, 33), BackgroundIndex) << "above the diamond, put back";
+	EXPECT_EQ(at(62, 62), BackgroundIndex) << "below it, put back";
+	EXPECT_EQ(at(5, 20), BackgroundIndex) << "above the square: never touched";
+	SDL_FreeSurface(pal);
+}
+
+TEST(HdTest, AFloorOnlyPillarDrawsTheRestOfItsDiamondFromItsArt)
+{
+	// The 1997 art of a prop square may draw only half its floor (the pillars in front drew the rest): drawn as floor only, the whole
+	// diamond shows, the half its pieces left from its HD art
+	const fs::path pack = fs::temp_directory_path() / "devilutionx_hd_floor_fill";
+	const fs::path dump = pack / "dump";
+	fs::remove_all(pack);
+	fs::create_directories(dump);
+	const std::array<SDL_Color, 256> colors = Palette();
+	{
+		fs::create_directories(pack / "palettes");
+		std::ofstream pal(pack / "palettes/test.pal", std::ios::binary);
+		for (const SDL_Color &c : colors)
+			pal << c.r << c.g << c.b;
+		std::ofstream index(pack / "hd.txt");
+		index << "scale 2\npropfloor f 7\n";
+		WriteTileArt(pack, "tile/f/7.png", FrontArt, 128, 128, index);
+	}
+	setenv("DEVILUTIONX_HD_PACK", pack.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "1", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 64, 64, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, BackgroundIndex);
+	hd::SetTarget(pal);
+	hd::SetTileset("f", 2); // (a tileset of its own: images are known by their file name across packs)
+	EXPECT_TRUE(hd::PropFloorOnly(7));
+	std::array<uint8_t, 256> identity;
+	for (int i = 0; i < 256; ++i)
+		identity[i] = static_cast<uint8_t>(i);
+	{
+		const Surface out(pal);
+		const hd::PillarScope pillar(out, { 0, 63 }, 7, 2);
+		const hd::FloorOnlyScope floorOnly(out, { 0, 63 }, identity.data());
+		for (int y = 32; y < 64; ++y) { // its pieces: the left half of the square only
+			uint8_t *dst = static_cast<uint8_t *>(pal->pixels) + y * pal->pitch;
+			std::array<uint8_t, 32> art;
+			art.fill(Own);
+			std::fill_n(dst, 32, Own);
+			hd::Mark(dst, art.data(), 32);
+		}
+	}
+	const auto low = [pal](int x, int y) { return static_cast<uint8_t *>(pal->pixels)[y * pal->pitch + x]; };
+	EXPECT_EQ(low(20, 48), Own) << "its own half";
+	EXPECT_NE(low(44, 48), BackgroundIndex) << "the other half of the diamond: drawn";
+	EXPECT_EQ(low(62, 34), BackgroundIndex) << "outside the diamond: as it was";
+	EXPECT_EQ(low(1, 33), BackgroundIndex) << "outside the diamond, where its pieces drew: put back";
+	hd::Present(nullptr, pal);
+	SDL_Surface *frame = LoadFrame(dump);
+	ASSERT_NE(frame, nullptr);
+	ExpectColor(At(frame, 2 * 44, 2 * 48), FrontArt.r, FrontArt.g, FrontArt.b, "the half it didn't draw shows its art");
+	ExpectColor(At(frame, 2 * 20, 2 * 48), FrontArt.r, FrontArt.g, FrontArt.b, "its own half too");
+	SDL_FreeSurface(frame);
+	hd::SetTileset("");
+	SDL_FreeSurface(pal);
+	fs::remove_all(pack);
+}
+
 } // namespace
 } // namespace devilution

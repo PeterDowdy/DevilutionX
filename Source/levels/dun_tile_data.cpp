@@ -195,7 +195,7 @@ void SetDungeonMicros(std::unique_ptr<std::byte[]> &dungeonCels, uint_fast8_t &m
 
 	size_t tileCount;
 	const std::unique_ptr<uint16_t[]> levelPieces = LoadMinData(tileCount);
-	hd::SetTileset(HdTilesetName());
+	hd::SetTileset(HdTilesetName(), microTileLen / 2);
 
 	ankerl::unordered_dense::map<uint16_t, DunFrameInfo> frameToTypeMap;
 	frameToTypeMap.reserve(4096);
