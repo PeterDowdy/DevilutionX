@@ -192,7 +192,9 @@
 #include "engine/surface.hpp"
 
 struct SDL_Surface;
+#ifndef USE_SDL1
 struct SDL_Renderer;
+#endif
 
 namespace devilution::hd {
 

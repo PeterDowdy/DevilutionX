@@ -30,7 +30,6 @@ set(tests
   items_test
   math_test
   missiles_test
-  monster_light_test
   multi_logging_test
   pack_test
   player_test
@@ -59,7 +58,6 @@ set(standalone_tests
   data_file_test
   file_util_test
   format_int_test
-  hd_test
   ini_test
   mod_identity_test
   palette_blending_test
@@ -75,6 +73,10 @@ set(standalone_tests
 )
 if(NOT USE_SDL1)
   list(APPEND standalone_tests text_render_integration_test)
+endif()
+if(NOT USE_SDL1 AND NOT USE_SDL3)
+  list(APPEND full_tests monster_light_test)
+  list(APPEND standalone_tests hd_test)
 endif()
 if(DEVILUTIONX_SCORING)
   list(APPEND standalone_tests score_rules_test)
@@ -161,7 +163,9 @@ target_link_dependencies(dun_render_benchmark
 )
 target_link_dependencies(file_util_test PRIVATE libdevilutionx_file_util app_fatal_for_testing)
 target_link_dependencies(format_int_test PRIVATE libdevilutionx_format_int language_for_testing)
-target_link_dependencies(hd_test PRIVATE libdevilutionx_clx_render libdevilutionx_surface DevilutionX::SDL app_fatal_for_testing language_for_testing)
+if(NOT USE_SDL1 AND NOT USE_SDL3)
+  target_link_dependencies(hd_test PRIVATE libdevilutionx_clx_render libdevilutionx_surface DevilutionX::SDL app_fatal_for_testing language_for_testing)
+endif()
 target_link_dependencies(ini_test PRIVATE libdevilutionx_ini app_fatal_for_testing)
 target_link_dependencies(mod_identity_test PRIVATE libdevilutionx_mod_identity app_fatal_for_testing)
 target_include_directories(mod_identity_test PRIVATE "${PROJECT_SOURCE_DIR}/3rdParty/PicoSHA2")

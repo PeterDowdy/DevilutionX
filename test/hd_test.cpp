@@ -32,6 +32,18 @@ namespace {
 
 namespace fs = std::filesystem;
 
+#ifdef _WIN32
+int setenv(const char *name, const char *value, int /*overwrite*/)
+{
+	return _putenv_s(name, value);
+}
+
+int unsetenv(const char *name)
+{
+	return _putenv_s(name, "");
+}
+#endif
+
 // Palette indices: the sprites' own colour, a monster type's swap of it, and a unique monster's on top
 constexpr uint8_t Own = 10;
 constexpr uint8_t Swapped = 20;

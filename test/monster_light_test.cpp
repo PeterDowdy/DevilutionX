@@ -19,6 +19,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
+#ifdef _WIN32
+int setenv(const char *name, const char *value, int /*overwrite*/)
+{
+	return _putenv_s(name, value);
+}
+#endif
+
 constexpr int Radius = 6;
 
 /** "zombie\\zombie" -> "monsters/zombie/zombie": a type's sprite path as the pack's "light" lines name it. */
