@@ -31,6 +31,7 @@
 #include "options.h"
 #include "utils/display.h"
 #include "utils/log.hpp"
+#include "utils/paths.h"
 #include "utils/sdl_wrap.h"
 #include "utils/static_vector.hpp"
 
@@ -122,6 +123,7 @@ void LimitFrameRate()
 
 void dx_init()
 {
+	hd::SetPackPath(GetOptions().Graphics.hdPack, paths::ConfigPath());
 	hd::Init();
 	hd::SetHeroArt(static_cast<hd::HeroArt>(*GetOptions().Graphics.heroArt));
 #ifndef USE_SDL1

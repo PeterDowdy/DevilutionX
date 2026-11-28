@@ -231,10 +231,12 @@ target_link_dependencies(libdevilutionx_cl2_to_clx
 
 add_devilutionx_object_library(libdevilutionx_hd
   engine/render/hd.cpp
+  engine/render/hd_archive.cpp
 )
 target_link_dependencies(libdevilutionx_hd PUBLIC
   DevilutionX::SDL
   SDL2::SDL2_image
+  ZLIB::ZLIB
   libdevilutionx_file_util
   libdevilutionx_log
   libdevilutionx_surface

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -17,9 +18,11 @@
 
 #include <SDL.h>
 #include <gtest/gtest.h>
+#include <zlib.h>
 
 #include "engine/clx_sprite.hpp"
 #include "engine/render/clx_render.hpp"
+#include "engine/render/hd_archive.hpp"
 #include "engine/surface.hpp"
 #include "utils/palette_blending.hpp"
 #include "utils/png.h"
@@ -2945,6 +2948,439 @@ TEST(HdTest, AFloorOnlyPillarDrawsTheRestOfItsDiamondFromItsArt)
 	hd::SetTileset("");
 	SDL_FreeSurface(pal);
 	fs::remove_all(pack);
+}
+
+// ---------------------------------------------------------------- HD pack archives (.hdpk, tools/hdpak.py)
+
+/** One file of a test archive: ``blob`` as the archive keeps it (see tools/hdpak.py for the codecs). */
+struct ArchiveFile {
+	std::string name;
+	uint8_t codec;
+	std::vector<uint8_t> blob;
+	uint32_t raw;
+	std::string meta;
+};
+
+void Put16(std::vector<uint8_t> &v, uint32_t x)
+{
+	v.push_back(static_cast<uint8_t>(x));
+	v.push_back(static_cast<uint8_t>(x >> 8));
+}
+
+void Put32(std::vector<uint8_t> &v, uint32_t x)
+{
+	for (int i = 0; i < 4; ++i)
+		v.push_back(static_cast<uint8_t>(x >> (8 * i)));
+}
+
+void Put64(std::vector<uint8_t> &v, uint64_t x)
+{
+	Put32(v, static_cast<uint32_t>(x));
+	Put32(v, static_cast<uint32_t>(x >> 32));
+}
+
+std::vector<uint8_t> Deflated(const std::vector<uint8_t> &raw)
+{
+	uLongf size = compressBound(static_cast<uLong>(raw.size()));
+	std::vector<uint8_t> out(size);
+	compress2(out.data(), &size, raw.data(), static_cast<uLong>(raw.size()), 6);
+	out.resize(size);
+	return out;
+}
+
+ArchiveFile ZlibFile(const std::string &name, const std::string &text)
+{
+	const std::vector<uint8_t> raw(text.begin(), text.end());
+	return { name, 1, Deflated(raw), static_cast<uint32_t>(raw.size()), {} };
+}
+
+/** An img8 image of ``argb`` (0xAARRGGBB, rows top to bottom). */
+ArchiveFile Img8File(const std::string &name, uint32_t w, uint32_t h, const std::vector<uint32_t> &argb, const std::string &meta = {})
+{
+	std::vector<uint32_t> colours;
+	std::vector<uint8_t> indices;
+	for (const uint32_t c : argb) {
+		auto it = std::find(colours.begin(), colours.end(), c);
+		if (it == colours.end()) it = colours.insert(colours.end(), c);
+		indices.push_back(static_cast<uint8_t>(it - colours.begin()));
+	}
+	std::vector<uint8_t> raw;
+	Put32(raw, w);
+	Put32(raw, h);
+	Put16(raw, static_cast<uint32_t>(colours.size()));
+	Put16(raw, 0);
+	for (const uint32_t c : colours)
+		Put32(raw, c);
+	raw.insert(raw.end(), indices.begin(), indices.end());
+	return { name, 2, Deflated(raw), static_cast<uint32_t>(raw.size()), meta };
+}
+
+/** 8 x 8 of one opaque colour, as img8. */
+ArchiveFile SolidArt(const std::string &name, SDL_Color c)
+{
+	return Img8File(name, 8, 8, std::vector<uint32_t>(64, 0xFF000000U | (c.r << 16) | (c.g << 8) | c.b));
+}
+
+/** 8 x 8 of one opaque colour, as a PNG kept as it is. */
+ArchiveFile StoredPng(const std::string &name, SDL_Color c, const fs::path &scratch)
+{
+	const fs::path file = scratch / "stored.png";
+	WritePicture(file, c);
+	std::ifstream in(file, std::ios::binary);
+	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+	const auto size = static_cast<uint32_t>(bytes.size());
+	return { name, 0, std::move(bytes), size, {} };
+}
+
+ArchiveFile Removed(const std::string &name)
+{
+	return { name, 255, {}, 0, {} };
+}
+
+ArchiveFile TestPalette()
+{
+	std::vector<uint8_t> raw;
+	for (const SDL_Color &c : Palette())
+		raw.insert(raw.end(), { c.r, c.g, c.b });
+	return { "palettes/test.pal", 0, raw, static_cast<uint32_t>(raw.size()), {} };
+}
+
+/**
+ * Appends ``files`` and an index of exactly them to the archive ``path`` (made when missing), then points header slot ``slot`` at that index
+ * as ``generation``: what tools/hdpak.py does for a spot rewrite (it lists the entries it keeps as well).
+ */
+void WriteArchive(const fs::path &path, std::vector<ArchiveFile> files, uint32_t generation = 1, int slot = 0)
+{
+	std::vector<uint8_t> data;
+	{
+		std::ifstream in(path, std::ios::binary);
+		if (in) data.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	}
+	if (data.size() < 128) data.resize(128, 0);
+	const auto split = [](const std::string &name) {
+		const size_t slash = name.rfind('/');
+		return slash == std::string::npos ? std::make_pair(std::string(), name) : std::make_pair(name.substr(0, slash), name.substr(slash + 1));
+	};
+	std::sort(files.begin(), files.end(), [&](const ArchiveFile &a, const ArchiveFile &b) { return split(a.name) < split(b.name); });
+	std::string strings;
+	std::vector<uint8_t> dirs, records;
+	uint32_t dirCount = 0;
+	std::string dir = "\x01"; // none yet
+	size_t dirAt = 0;
+	for (uint32_t i = 0; i < files.size(); ++i) {
+		const ArchiveFile &f = files[i];
+		const auto [d, leaf] = split(f.name);
+		if (d != dir) {
+			dir = d;
+			dirAt = dirs.size();
+			Put32(dirs, static_cast<uint32_t>(strings.size()));
+			Put32(dirs, static_cast<uint32_t>(d.size()));
+			Put32(dirs, i);
+			Put32(dirs, 0);
+			strings += d;
+			++dirCount;
+		}
+		const uint32_t count = dirs[dirAt + 12] + 1U; // (fewer than 256 a folder here)
+		dirs[dirAt + 12] = static_cast<uint8_t>(count);
+		const uint64_t offset = data.size();
+		data.insert(data.end(), f.blob.begin(), f.blob.end());
+		Put32(records, static_cast<uint32_t>(strings.size()));
+		Put16(records, static_cast<uint32_t>(leaf.size()));
+		strings += leaf;
+		records.push_back(f.codec);
+		records.push_back(0);
+		Put64(records, offset);
+		Put32(records, static_cast<uint32_t>(f.blob.size()));
+		Put32(records, f.raw);
+		Put32(records, static_cast<uint32_t>(strings.size()));
+		Put32(records, static_cast<uint32_t>(f.meta.size()));
+		strings += f.meta;
+	}
+	std::vector<uint8_t> index;
+	Put32(index, dirCount);
+	Put32(index, static_cast<uint32_t>(files.size()));
+	Put32(index, static_cast<uint32_t>(strings.size()));
+	Put32(index, 0);
+	index.insert(index.end(), dirs.begin(), dirs.end());
+	index.insert(index.end(), records.begin(), records.end());
+	index.insert(index.end(), strings.begin(), strings.end());
+	const std::vector<uint8_t> packed = Deflated(index);
+	const uint64_t indexAt = data.size();
+	data.insert(data.end(), packed.begin(), packed.end());
+	std::vector<uint8_t> head = { 'H', 'D', 'P', 'K', '\r', '\n', 0x1a, '\n' };
+	Put32(head, 1);
+	Put32(head, generation);
+	Put64(head, indexAt);
+	Put32(head, static_cast<uint32_t>(packed.size()));
+	Put32(head, static_cast<uint32_t>(index.size()));
+	head.resize(60, 0);
+	Put32(head, static_cast<uint32_t>(crc32(0, head.data(), 60)));
+	std::copy(head.begin(), head.end(), data.begin() + slot * 64);
+	std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char *>(data.data()), static_cast<std::streamsize>(data.size()));
+}
+
+/** Draws one 4x4 sprite of each of ``files`` side by side at scale 2 and gives back the HD frame (16 pixels a sprite). */
+std::vector<uint32_t> DrawEach(const fs::path &dump, const std::vector<std::string> &files)
+{
+	const std::array<SDL_Color, 256> colors = Palette();
+	SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, static_cast<int>(files.size()) * 8, 8, 8, SDL_PIXELFORMAT_INDEX8);
+	SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+	SDL_FillRect(pal, nullptr, 0);
+	hd::SetTarget(pal);
+	const Surface out(pal);
+	hd::ForgetView(out);
+	std::vector<OwnedClxSpriteList> sprites;
+	for (size_t i = 0; i < files.size(); ++i) {
+		sprites.push_back(Owned(Sprite()));
+		hd::RegisterSpriteList(files[i], 0, sprites.back());
+		ClxDraw(out, { static_cast<int>(i) * 8, 3 }, sprites.back()[0]);
+	}
+	hd::RequestDump("each");
+	hd::Present(nullptr, pal);
+	SDL_FreeSurface(pal);
+	return DumpedFrame(dump, "each");
+}
+
+void ExpectPixel(const std::vector<uint32_t> &frame, size_t width, size_t x, int r, int g, int b, const char *what)
+{
+	ASSERT_LT(2 * width + x, frame.size()) << what;
+	const uint32_t c = frame[2 * width + x];
+	EXPECT_EQ(static_cast<int>((c >> 16) & 0xFF), r) << what;
+	EXPECT_EQ(static_cast<int>((c >> 8) & 0xFF), g) << what;
+	EXPECT_EQ(static_cast<int>(c & 0xFF), b) << what;
+}
+
+TEST(HdTest, APackCanBeOneArchive)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive";
+	const fs::path dump = dir / "dump";
+	fs::remove_all(dir);
+	fs::create_directories(dump);
+	const fs::path archive = dir / "pack.hdpk";
+	WriteArchive(archive,
+	    { ZlibFile("hd.txt", "scale 2\nheld held\n"
+	                         "image sprite/arc/img8/0.0.png palettes/test.pal\n"
+	                         "image sprite/arc/stored/0.0.png palettes/test.pal\n"
+	                         "image sprite/plrgfx/sorcerer/sms/smsat/0.0.png palettes/test.pal\n"),
+	        TestPalette(),
+	        SolidArt("sprite/arc/img8/0.0.png", { 120, 60, 60 }),
+	        StoredPng("sprite/arc/stored/0.0.png", { 60, 120, 60 }, dir),
+	        SolidArt("sprite/plrgfx/sorcerer/sms/smsat/0.0.png", { 90, 90, 90 }),
+	        ZlibFile("held/c057/render.json", R"({"sprites": {"plrgfx/sorcerer/sms/smsat": {"dirs": [0, 1, 2, 3, 4, 5, 6, 7], "frames": 1}}})"),
+	        SolidArt("held/c057/plrgfx/sorcerer/sms/smsat/0.0.png", { 60, 60, 120 }),
+	        SolidArt("held/c058/plrgfx/sorcerer/sms/smsat/0.0.png", { 30, 30, 30 }) }); // unfinished: no render.json
+	fs::remove(dir / "stored.png");
+	WritePicture(dir / "sprite/arc/img8/0.0.png", { 250, 250, 250 }); // beside the archive: not read, the pack is the archive alone
+	unsetenv("DEVILUTIONX_HD_HELD");
+	setenv("DEVILUTIONX_HD_PACK", archive.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+	EXPECT_EQ(hd::PackScale(), 2);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	EXPECT_EQ(hd::Held().items, 1U);
+
+	std::vector<uint8_t> hero = Sprite();
+	hd::RegisterSpriteList("PlrGFX\\Sorcerer\\SMS\\SMSAT.CL2", 0, ClxSpriteList { hero.data() });
+	const std::vector<uint32_t> frame = [&]() {
+		const std::array<SDL_Color, 256> colors = Palette();
+		SDL_Surface *pal = SDL_CreateRGBSurfaceWithFormat(0, 32, 8, 8, SDL_PIXELFORMAT_INDEX8);
+		SDL_SetPaletteColors(pal->format->palette, colors.data(), 0, 256);
+		SDL_FillRect(pal, nullptr, 0);
+		hd::SetTarget(pal);
+		const Surface out(pal);
+		hd::ForgetView(out);
+		const OwnedClxSpriteList a = Owned(Sprite()), b = Owned(Sprite());
+		hd::RegisterSpriteList("Arc\\Img8.CL2", 0, a);
+		hd::RegisterSpriteList("Arc\\Stored.CL2", 0, b);
+		ClxDraw(out, { 0, 3 }, a[0]);
+		ClxDraw(out, { 8, 3 }, b[0]);
+		ClxDraw(out, { 16, 3 }, ClxSpriteList { hero.data() }[0]);
+		{
+			const hd::HeldItem sword(hero.data(), 57);
+			ClxDraw(out, { 24, 3 }, ClxSpriteList { hero.data() }[0]);
+		}
+		hd::RequestDump("archive");
+		hd::Present(nullptr, pal);
+		SDL_FreeSurface(pal);
+		return DumpedFrame(dump, "archive");
+	}();
+	ExpectPixel(frame, 64, 2, 120, 60, 60, "img8 art");
+	ExpectPixel(frame, 64, 18, 60, 120, 60, "a PNG kept as it is");
+	ExpectPixel(frame, 64, 34, 90, 90, 90, "a hero without a held item: the set's art");
+	ExpectPixel(frame, 64, 50, 60, 60, 120, "held art, found through the archive's held folder");
+	hd::ForgetSprites(hero.data());
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, LooseFilesAndLaterArchivesWin)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_layers";
+	const fs::path dump = dir / "dump";
+	fs::remove_all(dir);
+	fs::create_directories(dump);
+	std::string index = "scale 2\n";
+	for (const char *s : { "a", "b", "c", "d" })
+		index += std::string("image sprite/layers/") + s + "/0.0.png palettes/test.pal\n";
+	WriteArchive(dir / "1-base.hdpk",
+	    { ZlibFile("hd.txt", index), TestPalette(),
+	        SolidArt("sprite/layers/a/0.0.png", { 120, 60, 60 }),
+	        SolidArt("sprite/layers/b/0.0.png", { 120, 60, 60 }),
+	        SolidArt("sprite/layers/c/0.0.png", { 120, 60, 60 }),
+	        SolidArt("sprite/layers/d/0.0.png", { 120, 60, 60 }) });
+	WriteArchive(dir / "2-patch.hdpk",
+	    { SolidArt("sprite/layers/a/0.0.png", { 60, 120, 60 }), Removed("sprite/layers/c/0.0.png") });
+	WritePicture(dir / "sprite/layers/b/0.0.png", { 60, 60, 120 });
+	setenv("DEVILUTIONX_HD_PACK", dir.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP", dump.string().c_str(), 1);
+	setenv("DEVILUTIONX_HD_DUMP_EVERY", "0", 1);
+	hd::Init();
+	ASSERT_TRUE(hd::Enabled());
+	const std::vector<uint32_t> frame = DrawEach(dump, { "Layers\\A.CL2", "Layers\\B.CL2", "Layers\\C.CL2", "Layers\\D.CL2" });
+	ExpectPixel(frame, 64, 2, 60, 120, 60, "a: the later archive's");
+	ExpectPixel(frame, 64, 18, 60, 60, 120, "b: the loose file's");
+	ExpectPixel(frame, 64, 34, 200, 50, 50, "c: removed by the later archive, so the original pixels");
+	ExpectPixel(frame, 64, 50, 120, 60, 60, "d: the first archive's");
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, AnArchiveReadsItsIndexAndFollowsSpotRewrites)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_index";
+	fs::remove_all(dir);
+	fs::create_directories(dir);
+	const fs::path file = dir / "pack.hdpk";
+	WriteArchive(file,
+	    { ZlibFile("hd.txt", "scale 2\n"),
+	        Img8File("sprite/x/0.0.png", 2, 1, { 0xFF102030U, 0x00000000U }, std::string("hdbox\0-1 -2 6 7 tools\0other\0x\0", 30)),
+	        ZlibFile("held/c057/render.json", "{}"),
+	        ZlibFile("held/c057~doombringer/plrgfx/a/0.0.png", "-"),
+	        ZlibFile("held/c083/x/y/z.png", "-") });
+	hd::Archive archive;
+	ASSERT_TRUE(archive.Open(file.string()));
+	EXPECT_EQ(archive.Size(), 5U);
+	EXPECT_TRUE(archive.Unchanged());
+	hd::Archive::Entry entry;
+	EXPECT_FALSE(archive.Find("sprite/x/0.1.png", entry));
+	EXPECT_FALSE(archive.Find("sprite/0.0.png", entry));
+	ASSERT_TRUE(archive.Find("hd.txt", entry));
+	std::vector<uint8_t> bytes;
+	ASSERT_TRUE(archive.Read(entry, bytes));
+	EXPECT_EQ(std::string(bytes.begin(), bytes.end()), "scale 2\n");
+	ASSERT_TRUE(archive.Find("sprite/x/0.0.png", entry));
+	EXPECT_EQ(hd::Archive::Text(entry, "hdbox"), "-1 -2 6 7 tools");
+	EXPECT_EQ(hd::Archive::Text(entry, "other"), "x");
+	EXPECT_EQ(hd::Archive::Text(entry, "hdfx"), "");
+	ASSERT_TRUE(archive.Read(entry, bytes));
+	hd::Img8Image pic;
+	ASSERT_TRUE(hd::ParseImg8(bytes, pic));
+	EXPECT_EQ(pic.width, 2U);
+	EXPECT_EQ(pic.height, 1U);
+	EXPECT_EQ(pic.Colour(pic.indices[0]), 0xFF102030U);
+	EXPECT_EQ(pic.Colour(pic.indices[1]), 0U);
+	std::vector<std::string> keys;
+	archive.ListDirectories("held", keys);
+	EXPECT_EQ(keys, (std::vector<std::string> { "c057", "c057~doombringer", "c083" }));
+	keys.clear();
+	archive.ListDirectories("held/c083/x", keys);
+	EXPECT_EQ(keys, (std::vector<std::string> { "y" }));
+
+	// A spot rewrite: new blobs and a new index appended, the other header slot pointed at it
+	WriteArchive(file, { ZlibFile("hd.txt", "scale 3\n") }, 2, 1);
+	EXPECT_FALSE(archive.Unchanged());
+	ASSERT_TRUE(archive.Find("hd.txt", entry)); // the open archive still reads what it opened, whose blobs are where they were
+	ASSERT_TRUE(archive.Read(entry, bytes));
+	EXPECT_EQ(std::string(bytes.begin(), bytes.end()), "scale 2\n");
+	hd::Archive again;
+	ASSERT_TRUE(again.Open(file.string()));
+	EXPECT_EQ(again.Size(), 1U);
+	ASSERT_TRUE(again.Find("hd.txt", entry));
+	ASSERT_TRUE(again.Read(entry, bytes));
+	EXPECT_EQ(std::string(bytes.begin(), bytes.end()), "scale 3\n");
+
+	// A torn header write: the slot being written is ignored, the other one is read
+	{
+		std::fstream f(file, std::ios::in | std::ios::out | std::ios::binary);
+		f.seekp(64 + 20);
+		f.put('\x7f');
+	}
+	hd::Archive torn;
+	ASSERT_TRUE(torn.Open(file.string()));
+	EXPECT_EQ(torn.Size(), 5U);
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, ADamagedArchiveIsLeftAlone)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_damaged";
+	fs::remove_all(dir);
+	fs::create_directories(dir);
+	{
+		std::ofstream(dir / "junk.hdpk", std::ios::binary) << std::string(300, 'x');
+	}
+	hd::Archive archive;
+	EXPECT_FALSE(archive.Open((dir / "junk.hdpk").string()));
+	hd::Archive::Entry entry;
+	EXPECT_FALSE(archive.Find("hd.txt", entry));
+	std::vector<uint8_t> bad = { 2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0, 0, 0, 0 };
+	hd::Img8Image pic;
+	EXPECT_FALSE(hd::ParseImg8(bad, pic)) << "a payload shorter than its pixels";
+	bad = { 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0xFF, 0, 0, 0, 5 };
+	EXPECT_FALSE(hd::ParseImg8(bad, pic)) << "an index past the colours";
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, ThePackCanBeSetInTheIni)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_ini";
+	fs::remove_all(dir);
+	fs::create_directories(dir / "packs");
+	WriteArchive(dir / "packs/mine.hdpk", { ZlibFile("hd.txt", "scale 3\n") });
+	unsetenv("DEVILUTIONX_HD_PACK");
+	hd::SetPackPath("packs/mine.hdpk", dir.string()); // as diablo.ini's "HD Pack", relative to the config folder
+	EXPECT_EQ(hd::PackPath(), dir.string() + "/packs/mine.hdpk");
+	EXPECT_EQ(hd::PackScale(), 3);
+	hd::SetPackPath((dir / "packs/mine.hdpk").string(), "/elsewhere"); // absolute: as it is
+	EXPECT_EQ(hd::PackPath(), (dir / "packs/mine.hdpk").string());
+	setenv("DEVILUTIONX_HD_PACK", "/the/variable/wins", 1);
+	EXPECT_EQ(hd::PackPath(), "/the/variable/wins");
+	setenv("DEVILUTIONX_HD_PACK", "", 1); // empty: the ini's
+	EXPECT_EQ(hd::PackPath(), (dir / "packs/mine.hdpk").string());
+	hd::SetPackPath("", dir.string());
+	unsetenv("DEVILUTIONX_HD_PACK");
+	EXPECT_EQ(hd::PackPath(), "");
+	EXPECT_EQ(hd::PackScale(), 1);
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, AnArchiveIsReadFromManyThreadsAtOnce)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_threads";
+	fs::remove_all(dir);
+	fs::create_directories(dir);
+	std::vector<ArchiveFile> files;
+	for (int i = 0; i < 64; ++i)
+		files.push_back(ZlibFile("t/" + std::to_string(i) + ".txt", std::string(1000 + i * 37, static_cast<char>('a' + i % 26)) + std::to_string(i)));
+	WriteArchive(dir / "t.hdpk", files);
+	hd::Archive archive;
+	ASSERT_TRUE(archive.Open((dir / "t.hdpk").string()));
+	std::atomic<int> wrong { 0 };
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 8; ++t) {
+		threads.emplace_back([&, t]() {
+			std::vector<uint8_t> bytes;
+			hd::Archive::Entry entry;
+			for (int round = 0; round < 200; ++round) {
+				const int i = (round * 7 + t * 13) % 64;
+				const std::string want = std::string(1000 + i * 37, static_cast<char>('a' + i % 26)) + std::to_string(i);
+				if (!archive.Find("t/" + std::to_string(i) + ".txt", entry) || !archive.Read(entry, bytes) || std::string(bytes.begin(), bytes.end()) != want) ++wrong;
+			}
+		});
+	}
+	for (std::thread &thread : threads)
+		thread.join();
+	EXPECT_EQ(wrong, 0);
+	fs::remove_all(dir);
 }
 
 } // namespace
