@@ -140,4 +140,5 @@ Measured 2026-11-27 on `~/diablo-hd-projects/diablo/build/hd`:
 - **Tiles and props** are RGBA with more than 256 colours, so they're stored as the PNG they are (no gain, no loss).
 - **A subset** (town/L1/L2 tiles and props, warrior `wls`, towners, 8 monsters, `held/c064`): 44,243 files and 466 MB became **one 392 MB file**. 4,243 entries share a blob with another, and the build took 1 min 20 s with 14 workers.
 - **In game**: the WarriorLevel1to2 timedemo was run on that subset once as a folder and once as an archive. **119 of 122 dumped HD frames are pixel-identical.** The other 3 differ only in the in-game menu's pentagram, which animates by wall-clock time, not in any art.
-- **Full pack**: see the note at the top of the PR. The first full build is I/O-bound on `held/` (on the spinning `/mnt/scratch` disk).
+- **Index at full scale** (a synthetic archive of 1,000,000 held-style names): the engine opens it in **21 ms**, the whole test process sits at **48 MB RSS**, and a lookup takes **0.18 µs**. `hdpak.py` needs a few seconds to read a million-entry index on each `put`/`rm`/`sync`.
+- **The first full build** of the live pack is I/O-bound on `held/`, which is on the spinning `/mnt/scratch` disk. It's running into `/mnt/scratch/diablo/hd-pack-1127/diablo-hd.hdpk`, and the numbers will go on PR #20 when it finishes.
