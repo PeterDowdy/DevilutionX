@@ -30,7 +30,6 @@ set(tests
   items_test
   math_test
   missiles_test
-  monster_light_test
   multi_logging_test
   pack_test
   player_test
@@ -76,6 +75,7 @@ if(NOT USE_SDL1)
   list(APPEND standalone_tests text_render_integration_test)
 endif()
 if(NOT USE_SDL1 AND NOT USE_SDL3)
+  list(APPEND full_tests monster_light_test)
   list(APPEND standalone_tests hd_test)
 endif()
 if(DEVILUTIONX_SCORING)

@@ -3472,6 +3472,7 @@ void LetGoOfHeldArt(const void * /*who*/) { }
 std::string HeldArt(const void * /*who*/) { return {}; }
 HeldUse Held() { return {}; }
 void SetHeroArt(HeroArt /*level*/) { }
+HeroArt GetHeroArt() { return HeroArt::Original; }
 void SetTarget(SDL_Surface * /*palSurface*/) { }
 void RequestDump(std::string_view /*name*/) { }
 void NewScene() { }
