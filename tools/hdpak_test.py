@@ -120,9 +120,33 @@ class HdpakTest(unittest.TestCase):
         pak = self.open()
         np.testing.assert_array_equal(pixels(pak.file_bytes("sprite/a/0.1.png")), red)
         self.assertEqual(pak.file_bytes("hd.txt"), self.files["hd.txt"])
+        for jobs in ("1", "3"):
+            with self.assertRaises(SystemExit) as done:
+                hdpak.main(["verify", self.pak, "-j", jobs])
+            self.assertEqual(done.exception.code, 0)
+
+    def test_verify_finds_damage_and_extract_writes_the_folder_back(self):
+        out = os.path.join(self.root, "out")
+        hdpak.main(["extract", self.pak, out, "-j", "3"])
+        for name, data in self.files.items():
+            with open(os.path.join(out, *name.split("/")), "rb") as f:
+                got = f.read()
+            if name.endswith(".png"):
+                want = pixels(data).copy()
+                if not name.startswith("fx/"):
+                    want[want[..., 3] == 0] = 0
+                np.testing.assert_array_equal(pixels(got), want, name)
+            else:
+                self.assertEqual(got, data, name)
+        e = self.open().entries["tile/l1/5.png"]
+        with open(self.pak, "r+b") as f:
+            f.seek(e.offset + e.stored // 2)
+            byte = f.read(1)
+            f.seek(e.offset + e.stored // 2)
+            f.write(bytes([byte[0] ^ 0xFF]))
         with self.assertRaises(SystemExit) as done:
-            hdpak.main(["verify", self.pak])
-        self.assertEqual(done.exception.code, 0)
+            hdpak.main(["verify", self.pak, "-j", "2"])
+        self.assertEqual(done.exception.code, 1)
 
     def test_a_torn_header_falls_back_to_the_previous_index(self):
         hdpak.main(["rm", self.pak, "hd.txt"])  # generation 2, in slot B

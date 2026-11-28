@@ -45,6 +45,9 @@ than 256 colours, or that img8 doesn't make smaller, are stored as they are.
 Several archives may sit in one pack folder (*.hdpk, read in name order): a later archive's entries
 replace an earlier one's, and its tombstones remove them. "build --base" writes such a patch.
 
+Any number of processes may read an archive at once, also while one writes it (blobs never change once written);
+writers take an exclusive lock, one at a time. build, sync, verify and extract spread their work over -j processes.
+
 Commands (python3 hdpak.py <command> -h for the options):
     build SRC OUT.hdpk            pack a folder (follows symlinks); --base OLD.hdpk writes a patch against OLD
     sync PAK SRC [--delete]       rewrite only the entries whose source file changed; add new ones
@@ -52,9 +55,9 @@ Commands (python3 hdpak.py <command> -h for the options):
     rm PAK NAME ...               remove entries (--prefix: every entry under a prefix)
     ls PAK [PREFIX] [-l]          list entries
     cat PAK NAME                  write an entry's file to stdout (img8 comes back as a PNG with its tEXt)
-    extract PAK DEST [PREFIX]     write entries out as a folder
+    extract PAK DEST [PREFIX]     write entries out as a folder (in parallel: -j)
     info PAK                      entry count, codecs, live and dead bytes
-    verify PAK                    check every blob's CRC and that it decodes
+    verify PAK                    check every blob's CRC and that it decodes (in parallel: -j)
     compact PAK                   rewrite the archive without dead space (to a new file, then renamed over)
 
 Encoding PNGs needs Pillow and numpy; everything else needs only the standard library.
@@ -605,15 +608,12 @@ def cmd_cat(a):
 
 def cmd_extract(a):
     pak = Pak(a.pak)
+    work = [(name, e.codec, e.offset, e.stored, e.meta) for name, e in pak.entries.items()
+            if e.codec != TOMBSTONE and (not a.prefix or name.startswith(a.prefix))]
+    pak.close()
     n = 0
-    for name, e in sorted(pak.entries.items()):
-        if (a.prefix and not name.startswith(a.prefix)) or e.codec == TOMBSTONE:
-            continue
-        dest = os.path.join(a.dest, *name.split("/"))
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "wb") as f:
-            f.write(pak.file_bytes(name))
-        n += 1
+    for done in _parallel(a.pak, _extract_job, work, a.jobs, a.dest):
+        n += done
     print(f"{n} files written to {a.dest}")
 
 
@@ -638,30 +638,102 @@ def cmd_info(a):
 
 def cmd_verify(a):
     pak = Pak(a.pak)
+    work = [(name, e.codec, e.offset, e.stored, e.raw, e.crc) for name, e in pak.entries.items() if e.codec != TOMBSTONE]
+    total = len(pak.entries)
+    pak.close()
     bad = 0
-    for name, e in sorted(pak.entries.items()):
-        if e.codec == TOMBSTONE:
-            continue
-        b = pak.blob(e)
+    for problems in _parallel(a.pak, _verify_job, work, a.jobs):
+        for name, problem in problems:
+            bad += 1
+            print(f"{name}: {problem}")
+    print(f"{a.pak}: {total} entries, {bad} bad")
+    sys.exit(1 if bad else 0)
+
+
+# ---------------------------------------------------------------- parallel readers
+# Blobs never change once written, so any number of processes may read an archive at once (a writer only appends,
+# then switches the header). The parent reads the index once and hands each worker a batch of (name, codec, offset,
+# ...) in blob order; each worker reads its blobs with positional reads on a file of its own.
+
+_worker_file = None
+
+
+def _worker_open(path: str):
+    global _worker_file
+    _worker_file = open(path, "rb")
+
+
+def _read_at(offset: int, size: int) -> bytes:
+    if hasattr(os, "pread"):
+        return os.pread(_worker_file.fileno(), size, offset)
+    _worker_file.seek(offset)  # Windows: a file per worker, so seeking is safe
+    return _worker_file.read(size)
+
+
+def _parallel(path: str, job, work: list, jobs: int, *extra):
+    """Runs ``job(batch, *extra)`` over ``work`` in batches, in ``jobs`` processes (1: in this one), yielding the results."""
+    work.sort(key=lambda w: w[2])  # by offset: each batch reads a stretch of the file
+    batch = max(64, min(4096, len(work) // (max(1, jobs) * 8) or 1))
+    batches = [work[i:i + batch] for i in range(0, len(work), batch)]
+    progress = Progress(len(work))
+    if jobs <= 1:
+        global _worker_file
+        _worker_open(path)
+        try:
+            for b in batches:
+                yield job(b, *extra)
+                for _ in b:
+                    progress.step()
+        finally:
+            _worker_file.close()
+            _worker_file = None
+    else:
+        with ProcessPoolExecutor(jobs, initializer=_worker_open, initargs=(path,)) as ex:
+            for b, result in zip(batches, ex.map(job, batches, *[[x] * len(batches) for x in extra])):
+                yield result
+                for _ in b:
+                    progress.step()
+    progress.done()
+
+
+def _verify_job(batch):
+    problems = []
+    for name, codec, offset, stored, raw_size, crc in batch:
+        b = _read_at(offset, stored)
         problem = None
-        if len(b) != e.stored or zlib.crc32(b) != e.crc:
+        if len(b) != stored or zlib.crc32(b) != crc:
             problem = "CRC mismatch"
-        elif e.codec in (ZLIB, IMG8):
+        elif codec in (ZLIB, IMG8):
             try:
                 raw = zlib.decompress(b)
-                if len(raw) != e.raw:
+                if len(raw) != raw_size:
                     problem = "raw size mismatch"
-                elif e.codec == IMG8:
+                elif codec == IMG8:
                     w, h, n, _ = IMG8_HEAD.unpack_from(raw)
-                    if not 1 <= n <= 256 or len(raw) != IMG8_HEAD.size + 4 * n + w * h or (max(raw[IMG8_HEAD.size + 4 * n:], default=0) >= n):
+                    pixels = raw[IMG8_HEAD.size + 4 * n:]
+                    if not 1 <= n <= 256 or len(raw) != IMG8_HEAD.size + 4 * n + w * h or (n < 256 and max(pixels, default=0) >= n):
                         problem = "bad img8 payload"
             except zlib.error as ex:
                 problem = f"zlib: {ex}"
+        elif codec != STORED:
+            problem = f"unknown codec {codec}"
         if problem:
-            bad += 1
-            print(f"{name}: {problem}")
-    print(f"{a.pak}: {len(pak.entries)} entries, {bad} bad")
-    sys.exit(1 if bad else 0)
+            problems.append((name, problem))
+    return problems
+
+
+def _extract_job(batch, dest):
+    for name, codec, offset, stored, meta in batch:
+        b = _read_at(offset, stored)
+        if codec == ZLIB:
+            b = zlib.decompress(b)
+        elif codec == IMG8:
+            b = img8_to_png(zlib.decompress(b), meta)
+        out = os.path.join(dest, *name.split("/"))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(b)
+    return len(batch)
 
 
 def cmd_compact(a):
@@ -739,10 +811,15 @@ def main(argv=None):
     s.add_argument("pak")
     s.add_argument("dest")
     s.add_argument("prefix", nargs="?")
+    s.add_argument("-j", "--jobs", type=int, default=jobs)
     s.set_defaults(fn=cmd_extract)
 
-    for name, fn, text in (("info", cmd_info, "sizes and codecs"), ("verify", cmd_verify, "check every blob"),
-                           ("compact", cmd_compact, "reclaim dead space")):
+    s = sub.add_parser("verify", help="check every blob")
+    s.add_argument("pak")
+    s.add_argument("-j", "--jobs", type=int, default=jobs)
+    s.set_defaults(fn=cmd_verify)
+
+    for name, fn, text in (("info", cmd_info, "sizes and codecs"), ("compact", cmd_compact, "reclaim dead space")):
         s = sub.add_parser(name, help=text)
         s.add_argument("pak")
         s.set_defaults(fn=fn)
