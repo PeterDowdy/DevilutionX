@@ -3329,5 +3329,28 @@ TEST(HdTest, ADamagedArchiveIsLeftAlone)
 	fs::remove_all(dir);
 }
 
+TEST(HdTest, ThePackCanBeSetInTheIni)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_ini";
+	fs::remove_all(dir);
+	fs::create_directories(dir / "packs");
+	WriteArchive(dir / "packs/mine.hdpk", { ZlibFile("hd.txt", "scale 3\n") });
+	unsetenv("DEVILUTIONX_HD_PACK");
+	hd::SetPackPath("packs/mine.hdpk", dir.string()); // as diablo.ini's "HD Pack", relative to the config folder
+	EXPECT_EQ(hd::PackPath(), dir.string() + "/packs/mine.hdpk");
+	EXPECT_EQ(hd::PackScale(), 3);
+	hd::SetPackPath((dir / "packs/mine.hdpk").string(), "/elsewhere"); // absolute: as it is
+	EXPECT_EQ(hd::PackPath(), (dir / "packs/mine.hdpk").string());
+	setenv("DEVILUTIONX_HD_PACK", "/the/variable/wins", 1);
+	EXPECT_EQ(hd::PackPath(), "/the/variable/wins");
+	setenv("DEVILUTIONX_HD_PACK", "", 1); // empty: the ini's
+	EXPECT_EQ(hd::PackPath(), (dir / "packs/mine.hdpk").string());
+	hd::SetPackPath("", dir.string());
+	unsetenv("DEVILUTIONX_HD_PACK");
+	EXPECT_EQ(hd::PackPath(), "");
+	EXPECT_EQ(hd::PackScale(), 1);
+	fs::remove_all(dir);
+}
+
 } // namespace
 } // namespace devilution

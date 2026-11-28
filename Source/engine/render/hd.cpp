@@ -2097,10 +2097,34 @@ int UniqueMonsterLight(std::string_view spritePath, std::string_view trnFile, st
 	return it != MonsterLights.end() ? it->second : 0;
 }
 
+namespace {
+std::string ConfiguredPack; ///< SetPackPath
+} // namespace
+
+void SetPackPath(std::string_view path, std::string_view base)
+{
+	ConfiguredPack.clear();
+	if (path.empty()) return;
+	if (IsAbsolutePath(path) || base.empty()) {
+		ConfiguredPack = std::string(path);
+		return;
+	}
+	ConfiguredPack = std::string(base);
+	if (ConfiguredPack.back() != '/' && ConfiguredPack.back() != '\\') ConfiguredPack += '/';
+	ConfiguredPack += path;
+}
+
+std::string PackPath()
+{
+	const char *env = std::getenv("DEVILUTIONX_HD_PACK");
+	if (env != nullptr && *env != '\0') return env;
+	return ConfiguredPack;
+}
+
 int PackScale()
 {
-	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
-	if (!Supported || dir == nullptr || *dir == '\0') return 1;
+	const std::string dir = PackPath();
+	if (!Supported || dir.empty()) return 1;
 	OpenPack(dir);
 	std::vector<uint8_t> text;
 	if (!ReadPackFile("hd.txt", text)) return 1;
@@ -2306,8 +2330,8 @@ void LoadHeroArt(HeroArtFolder &folder, std::string line, const char *override)
 
 void Init()
 {
-	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
-	if (!Supported || dir == nullptr || *dir == '\0') return;
+	const std::string dir = PackPath();
+	if (!Supported || dir.empty()) return;
 	OpenPack(dir);
 	std::vector<uint8_t> text;
 	if (!ReadPackFile("hd.txt", text)) {

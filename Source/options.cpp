@@ -234,6 +234,7 @@ void LoadOptions()
 	}
 
 	ini->getUtf8Buf("Hellfire", "SItem", options.Hellfire.szItem, sizeof(options.Hellfire.szItem));
+	options.Graphics.hdPack = ini->getString("Graphics", "HD Pack");
 	ini->getUtf8Buf("Network", "Bind Address", "0.0.0.0", options.Network.szBindAddress, sizeof(options.Network.szBindAddress));
 	ini->getUtf8Buf("Network", "Previous Game ID", options.Network.szPreviousZTGame, sizeof(options.Network.szPreviousZTGame));
 	ini->getUtf8Buf("Network", "Previous Host", options.Network.szPreviousHost, sizeof(options.Network.szPreviousHost));
@@ -265,6 +266,7 @@ void SaveOptions()
 	}
 
 	ini->set("Hellfire", "SItem", options.Hellfire.szItem);
+	ini->set("Graphics", "HD Pack", options.Graphics.hdPack);
 
 	ini->set("Network", "Bind Address", options.Network.szBindAddress);
 	ini->set("Network", "Previous Game ID", options.Network.szPreviousZTGame);

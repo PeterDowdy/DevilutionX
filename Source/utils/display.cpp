@@ -50,6 +50,7 @@
 #include "headless_mode.hpp"
 #include "options.h"
 #include "utils/log.hpp"
+#include "utils/paths.h"
 #include "utils/sdl_compat.h"
 #include "utils/sdl_geometry.h"
 #include "utils/sdl_wrap.h"
@@ -163,6 +164,7 @@ Size WindowSizeForHdPack(Size windowSize)
 {
 #ifndef USE_SDL3
 	if (!*GetOptions().Graphics.upscale || *GetOptions().Graphics.fullscreen) return windowSize;
+	hd::SetPackPath(GetOptions().Graphics.hdPack, paths::ConfigPath());
 	int factor = hd::PackScale();
 	if (factor <= 1) return windowSize;
 	SDL_DisplayMode mode;

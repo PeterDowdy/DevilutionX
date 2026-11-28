@@ -305,11 +305,20 @@ void MarkBlend(const uint8_t *dst, const uint8_t *lit, unsigned n);
 /** Whether an HD pack is loaded. */
 bool Enabled();
 
-/** Loads the pack named by DEVILUTIONX_HD_PACK, if any. */
+/** Loads the pack PackPath names (DEVILUTIONX_HD_PACK, else diablo.ini's "HD Pack"), if any. */
 void Init();
 
 /** The pack's scale ("scale N" in its hd.txt), read without loading it; 1 when there is no pack. For sizing the window before Init. */
 int PackScale();
+
+/**
+ * The pack Init and PackScale load when DEVILUTIONX_HD_PACK isn't set (or is empty): diablo.ini's "HD Pack", a folder or an .hdpk archive.
+ * A relative ``path`` is taken relative to ``base`` (the config folder). Empty: no pack.
+ */
+void SetPackPath(std::string_view path, std::string_view base);
+
+/** The pack Init loads: DEVILUTIONX_HD_PACK when it is set and not empty, else SetPackPath's; empty: none. */
+std::string PackPath();
 
 /**
  * The light radius a monster type carries in this pack ("light monsters/<sprite path>[@<trn>] <radius>" in hd.txt; e.g. a creature

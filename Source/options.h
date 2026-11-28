@@ -579,6 +579,11 @@ struct GraphicsOptions : OptionCategoryBase {
 	OptionEntryBoolean alternateNestArt;
 	/** @brief Which art an HD pack draws heroes with. */
 	OptionEntryHeroArt heroArt;
+	/**
+	 * @brief The HD pack to load (diablo.ini "HD Pack", not in the settings menu): a folder or an .hdpk archive, absolute or relative to the
+	 * config folder; empty: none. DEVILUTIONX_HD_PACK, when set, wins over it.
+	 */
+	std::string hdPack;
 #if SDL_VERSION_ATLEAST(2, 0, 0)
 	/** @brief Use a hardware cursor (SDL2 only). */
 	OptionEntryBoolean hardwareCursor;
