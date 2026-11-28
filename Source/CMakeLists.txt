@@ -229,18 +229,28 @@ target_link_dependencies(libdevilutionx_cl2_to_clx
   libdevilutionx_endian_write
 )
 
-add_devilutionx_object_library(libdevilutionx_hd
-  engine/render/hd.cpp
-  engine/render/hd_archive.cpp
-)
-target_link_dependencies(libdevilutionx_hd PUBLIC
-  DevilutionX::SDL
-  SDL2::SDL2_image
-  ZLIB::ZLIB
-  libdevilutionx_file_util
-  libdevilutionx_log
-  libdevilutionx_surface
-)
+if(USE_SDL1 OR USE_SDL3)
+  add_devilutionx_object_library(libdevilutionx_hd
+    engine/render/hd.cpp
+  )
+  target_link_dependencies(libdevilutionx_hd PUBLIC
+    DevilutionX::SDL
+    libdevilutionx_surface
+  )
+else()
+  add_devilutionx_object_library(libdevilutionx_hd
+    engine/render/hd.cpp
+    engine/render/hd_archive.cpp
+  )
+  target_link_dependencies(libdevilutionx_hd PUBLIC
+    DevilutionX::SDL
+    SDL2::SDL2_image
+    ZLIB::ZLIB
+    libdevilutionx_file_util
+    libdevilutionx_log
+    libdevilutionx_surface
+  )
+endif()
 
 add_devilutionx_object_library(libdevilutionx_clx_render
   engine/render/clx_render.cpp

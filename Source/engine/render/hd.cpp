@@ -1,5 +1,7 @@
 #include "engine/render/hd.hpp"
 
+#if !defined(USE_SDL1) && !defined(USE_SDL3)
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -3421,3 +3423,96 @@ bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)
 }
 
 } // namespace devilution::hd
+
+#else
+
+namespace devilution::hd {
+
+thread_local PixelProvenance *TrackPlane = nullptr;
+thread_local const uint8_t *TrackBase = nullptr;
+thread_local uint32_t TrackImage = 0;
+thread_local int16_t TrackLeft = 0;
+thread_local int16_t TrackTop = 0;
+thread_local uint8_t TrackFree = 0;
+thread_local uint32_t TrackSerial = 0;
+thread_local uint8_t TrackUnder = 0;
+thread_local uint8_t TrackShade = 0;
+thread_local bool TrackBlend = false;
+
+uint8_t LightLevelOf(const uint8_t * /*table*/) { return 0; }
+void KeepBehind(const uint8_t * /*dst*/, unsigned /*n*/) { }
+void MarkBlend(const uint8_t * /*dst*/, const uint8_t * /*lit*/, unsigned /*n*/) { }
+bool Enabled() { return false; }
+void Init() { }
+int PackScale() { return 1; }
+void SetPackPath(std::string_view /*path*/, std::string_view /*base*/) { }
+std::string PackPath() { return {}; }
+int MonsterLight(std::string_view /*spritePath*/, std::string_view /*trnFile*/) { return 0; }
+int UniqueMonsterLight(std::string_view /*spritePath*/, std::string_view /*trnFile*/, std::string_view /*uniqueTrn*/, std::string_view /*uniqueName*/) { return 0; }
+void RegisterSprites(std::string_view /*path*/, ClxSpriteListOrSheet /*sprites*/, const void * /*owner*/) { }
+void RegisterSpriteList(std::string_view /*path*/, uint16_t /*group*/, ClxSpriteList /*list*/, const void * /*owner*/) { }
+void ForgetSprites(const void * /*owner*/) { }
+MemoryUse Memory() { return {}; }
+MemoryUse Memory(std::string_view /*file*/) { return {}; }
+bool Loaded(std::string_view /*file*/) { return false; }
+void BeforeRecolour(ClxSprite /*sprite*/, const uint8_t * /*trn*/) { }
+void AfterRecolour(ClxSprite /*sprite*/) { }
+NamedRecolour::NamedRecolour(std::string_view /*name*/) { }
+NamedRecolour::~NamedRecolour() = default;
+void NameTrn(const uint8_t * /*trn*/, std::string_view /*name*/, std::string_view /*owner*/) { }
+void TrackOffscreen(SDL_Surface * /*buffer*/) { }
+void ForgetOffscreen(SDL_Surface * /*buffer*/) { }
+ItemGraphic::ItemGraphic(int /*cursorGraphic*/) { }
+ItemGraphic::ItemGraphic(int /*cursorGraphic*/, bool /*dropped*/, int /*uniqueIndex*/, std::string_view /*uniqueName*/) { }
+ItemGraphic::~ItemGraphic() = default;
+HeldItem::HeldItem(const void * /*who*/, int /*cursorGraphic*/, int /*uniqueIndex*/, std::string_view /*uniqueName*/) { }
+HeldItem::HeldItem(const void * /*who*/, HeldPiece /*weapon*/, HeldPiece /*shield*/) { }
+HeldItem::~HeldItem() = default;
+void LetGoOfHeldArt(const void * /*who*/) { }
+std::string HeldArt(const void * /*who*/) { return {}; }
+HeldUse Held() { return {}; }
+void SetHeroArt(HeroArt /*level*/) { }
+void SetTarget(SDL_Surface * /*palSurface*/) { }
+void RequestDump(std::string_view /*name*/) { }
+void NewScene() { }
+void ForgetView(const Surface & /*out*/) { }
+void SetTileset(std::string_view /*name*/, int /*rows*/) { }
+void SetCycledColors(uint8_t /*first*/, uint8_t /*last*/) { }
+void SetLightTables(const uint8_t * /*tables*/, size_t /*size*/) { }
+SpriteScope::SpriteScope(const Surface & /*out*/, Point /*position*/, ClxSprite /*clx*/, const uint8_t * /*drawTrn*/, bool /*local*/) { }
+SpriteScope::~SpriteScope() = default;
+std::string TileVariantFile(std::string_view /*tileset*/, uint16_t /*pillar*/, Point /*tile*/, int /*period*/, int /*hashes*/) { return {}; }
+PillarScope::PillarScope(const Surface & /*out*/, Point /*bottomLeft*/, uint16_t /*pillar*/, int /*rows*/, Point /*tile*/) { }
+PillarScope::~PillarScope() = default;
+bool ParseProp(std::string_view /*text*/, int /*rows*/, Prop & /*prop*/) { return false; }
+Displacement SquareUnder(int /*x*/, int /*y*/, int /*rows*/) { return {}; }
+bool HasProps() { return false; }
+bool PropFloorOnly(uint16_t /*pillar*/) { return false; }
+const std::vector<Displacement> &PropFeet()
+{
+	static const std::vector<Displacement> empty;
+	return empty;
+}
+const Prop *PropAt(uint16_t /*pillar*/, Point /*tile*/, Displacement /*foot*/) { return nullptr; }
+void DrawProp(const Surface & /*out*/, const Prop & /*prop*/, Point /*pillarTopLeft*/, const uint8_t * /*levels*/, const uint8_t * /*lightTables*/,
+    int /*numLevels*/, const uint8_t (* /*blend*/)[256])
+{
+}
+FloorOnlyScope::FloorOnlyScope(const Surface &out, Point /*bottomLeft*/, const uint8_t * /*tbl*/)
+    : out_(out)
+    , x0_(0)
+    , y0_(0)
+    , tbl_(nullptr)
+    , image_(0)
+    , serial_(0)
+    , left_(0)
+    , top_(0)
+{
+}
+FloorOnlyScope::~FloorOnlyScope() = default;
+bool InFloorDiamond(int /*x*/, int /*k*/) { return false; }
+bool Present(SDL_Renderer * /*renderer*/, SDL_Surface * /*palSurface*/, int /*dumpStep*/) { return false; }
+
+} // namespace devilution::hd
+
+#endif
