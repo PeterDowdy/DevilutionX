@@ -12,18 +12,31 @@ You can now ship an HD pack as **one file** instead of a folder of about a milli
 HDPAK="uv run --project ~/code/pixel-hd-studio/backend python ~/code/DevilutionX-worktrees/hd-pack/tools/hdpak.py"
 
 $HDPAK build  path/to/hd  diablo-hd.hdpk          # pack a folder (follows symlinks)
-DEVILUTIONX_HD_PACK=diablo-hd.hdpk devilutionx    # play from the archive
+DEVILUTIONX_HD_PACK=diablo-hd.hdpk devilutionx    # play from the archive (or set "HD Pack" in diablo.ini)
 
 $HDPAK put    diablo-hd.hdpk sprite/monsters/zombie/zombiew/3.5.png=new.png   # replace one image
 $HDPAK sync   diablo-hd.hdpk path/to/hd --delete  # rewrite only what changed in the folder
 $HDPAK compact diablo-hd.hdpk                      # reclaim the space that old versions left
 ```
 
+## Choosing the pack
+
+Two settings choose which pack loads. The first one that is set wins:
+
+1. **`DEVILUTIONX_HD_PACK`** (environment variable), when it is set and not empty. The studio's launcher and the tests use this.
+2. **`HD Pack` in `diablo.ini`**, under `[Graphics]`. It's an absolute path, or one relative to the config folder (the one holding `diablo.ini`). Empty means no pack. It isn't shown in the settings menu; edit the ini.
+
+```ini
+[Graphics]
+Upscale=1
+HD Pack=/home/peter/diablo-hd-projects/hdpk/diablo-hd.hdpk
+```
+
 ## How the engine finds files
 
-`DEVILUTIONX_HD_PACK` can name either of two things:
+The pack (from either setting) can be either of two things:
 
-| `DEVILUTIONX_HD_PACK` is | The engine reads |
+| The pack is | The engine reads |
 |---|---|
 | **a `.hdpk` file** | that archive only. Nothing loose. This is the shipping setup. |
 | **a folder** | 1) the loose file, if there is one; 2) otherwise the folder's `*.hdpk` archives, **later names first** (`1-base.hdpk` < `2-patch.hdpk`). |
@@ -128,7 +141,8 @@ The full spec is in the docstring at the top of `tools/hdpak.py`.
 - **`hd.txt` still lists every image** (`image <file> <palette>`). The archive doesn't replace the manifest. An image the manifest lists but no archive or loose file has is logged (`HD: can't load ...: the pack has no such file`) and drawn without HD art, as a missing PNG was before.
 - **Only tEXt chunks before IDAT are kept**, as the engine only ever read those.
 - **Re-encoding is deterministic per file.** `sync` compares the source bytes' hash, not timestamps, so touching a file without changing it costs nothing.
-- **Big builds are I/O-bound.** The full pack is ~954k source files, and `held/` lives on the spinning `/mnt/scratch` disk. Expect the first `build` to take a long time; every later `sync` only re-encodes what changed, though it still reads every source file to hash it.
+- **Write archives to the SSD** (e.g. `~/diablo-hd-projects/hdpk/`), not `/mnt/scratch`, which is a spinning disk shared with other jobs.
+- **Big builds are I/O-bound.** The full pack is ~954k source files, and the `held/` sources live on `/mnt/scratch`. Expect the first `build` to take a long time; every later `sync` only re-encodes what changed, though it still reads every source file to hash it.
 - **Line endings:** `hdpak.py` is plain LF Python; engine sources stay CRLF (see the repo notes).
 
 ## Measured on the live pack
@@ -141,4 +155,4 @@ Measured 2026-11-27 on `~/diablo-hd-projects/diablo/build/hd`:
 - **A subset** (town/L1/L2 tiles and props, warrior `wls`, towners, 8 monsters, `held/c064`): 44,243 files and 466 MB became **one 392 MB file**. 4,243 entries share a blob with another, and the build took 1 min 20 s with 14 workers.
 - **In game**: the WarriorLevel1to2 timedemo was run on that subset once as a folder and once as an archive. **119 of 122 dumped HD frames are pixel-identical.** The other 3 differ only in the in-game menu's pentagram, which animates by wall-clock time, not in any art.
 - **Index at full scale** (a synthetic archive of 1,000,000 held-style names): the engine opens it in **21 ms**, the whole test process sits at **48 MB RSS**, and a lookup takes **0.18 µs**. `hdpak.py` needs a few seconds to read a million-entry index on each `put`/`rm`/`sync`.
-- **The first full build** of the live pack is I/O-bound on `held/`, which is on the spinning `/mnt/scratch` disk. It's running into `/mnt/scratch/diablo/hd-pack-1127/diablo-hd.hdpk`, and the numbers will go on PR #20 when it finishes.
+- **The first full build** of the live pack is I/O-bound on `held/`, whose source frames sit on the spinning `/mnt/scratch` disk (`build/hd/held` links to `/mnt/scratch/diablo/hd-live-preview/held`). The archive itself is written to the SSD, at `~/diablo-hd-projects/hdpk/diablo-hd.hdpk`. The numbers will go on PR #20 when it finishes.

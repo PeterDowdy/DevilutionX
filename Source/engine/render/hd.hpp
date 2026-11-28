@@ -46,7 +46,9 @@
  *     of a monster's art is darker than its own unlit value times that strength. It fades out over light levels 12-15, so a monster lit to
  *     black stays black. Off without the line.
  *
- * Archives: DEVILUTIONX_HD_PACK may name one archive (".hdpk", written by tools/hdpak.py) instead of a folder: the same files, under the
+ * Which pack: DEVILUTIONX_HD_PACK when set and not empty, else diablo.ini's [Graphics] "HD Pack" (relative to the config folder; PackPath).
+ *
+ * Archives: the pack may name one archive (".hdpk", written by tools/hdpak.py) instead of a folder: the same files, under the
  * same names, in one file (the images as 8-bit indexed pictures where they have 256 colours or fewer, their tEXt chunks in the archive's
  * index). A folder may hold archives too (every *.hdpk in it, read in name order: a later one's entries replace an earlier one's, and its
  * tombstones remove them), and its loose files win over all of them, so art can be dropped into a packed pack without repacking. A held or
