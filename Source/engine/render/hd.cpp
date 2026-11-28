@@ -163,6 +163,8 @@ std::atomic<uint32_t> LoadCount { 0 };
 std::atomic<uint32_t> UnloadCount { 0 };
 std::string MemLog;                        ///< DEVILUTIONX_HD_MEMLOG
 double ComposeMs = 0;                      ///< time spent composing, for MemLog
+std::atomic<uint64_t> LoadMicros { 0 };    ///< time spent loading images (LoadImage), for MemLog
+std::atomic<uint32_t> LoadMaxMicros { 0 }; ///< the longest single image load, for MemLog
 std::unordered_set<std::string> ArtStems; ///< "sprite/<path>" with art for any frame, its own or a swap's
 std::string RecolourName;                 ///< the TRN ClxApplyTrans is applying, while a NamedRecolour lives
 std::unordered_map<const uint8_t *, NamedTrn> TrnNames;
@@ -644,9 +646,21 @@ SDL_Surface *LoadPng(const std::string &path, const std::vector<uint8_t> *data)
 	return loaded;
 }
 
+/** Adds the time from its making to its end to LoadMicros (and LoadMaxMicros). */
+struct LoadTimer {
+	std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+	~LoadTimer()
+	{
+		const auto us = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+		LoadMicros += us;
+		for (uint32_t most = LoadMaxMicros; us > most && !LoadMaxMicros.compare_exchange_weak(most, us);) { }
+	}
+};
+
 /** Loads the pixels of the pack image ``file``: its loose file when there is one, else its archive entry. */
 bool LoadImage(const std::string &file, const std::string &palette, HdImage &img)
 {
+	const LoadTimer timer;
 	const bool keepClear = file.compare(0, 3, "fx/") == 0;
 	const std::string path = PathOf(file);
 	SDL_Surface *loaded = nullptr;
@@ -2332,6 +2346,7 @@ void Init()
 {
 	const std::string dir = PackPath();
 	if (!Supported || dir.empty()) return;
+	const auto initStart = std::chrono::steady_clock::now();
 	OpenPack(dir);
 	std::vector<uint8_t> text;
 	if (!ReadPackFile("hd.txt", text)) {
@@ -2471,6 +2486,7 @@ void Init()
 		std::atexit([]() { ClxFreeHook = nullptr; }); // sprite data freed at exit may outlive the maps here
 	}
 	LogInfo("HD: pack {} ({} images, {} archives{}, {}x{}{})", PackDir, Manifest.size(), Archives.size(), LooseFiles ? " under its loose files" : "", Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
+	LogInfo("HD: pack read in {:.0f} ms", std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - initStart).count());
 	LogInfo("HD: images {}, idle art bounded at {} MB, {}", UnloadArt ? "let go of when unused" : "kept once loaded", BudgetBytes >> 20,
 	    IndexedArt ? "8-bit where 256 colours do" : "all in full colour");
 }
@@ -3382,7 +3398,8 @@ bool Present(SDL_Renderer *renderer, SDL_Surface *palSurface, int dumpStep)
 	if (!MemLog.empty() && PresentCount % 300 == 0) {
 		const MemoryUse use = Memory();
 		std::ofstream(MemLog, std::ios::app) << "present " << PresentCount << " bytes " << use.bytes << " peak " << use.peak << " images " << use.images
-		                                     << " indexed " << use.indexed << " loads " << use.loads << " unloads " << use.unloads << " composeMs " << ComposeMs << '\n';
+		                                     << " indexed " << use.indexed << " loads " << use.loads << " unloads " << use.unloads << " composeMs " << ComposeMs
+		                                     << " loadMs " << LoadMicros / 1000.0 << " loadMaxMs " << LoadMaxMicros / 1000.0 << '\n';
 	}
 	if (renderer == nullptr) return false;
 	const int w = palSurface->w * Scale;
