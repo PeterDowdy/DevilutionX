@@ -2,6 +2,20 @@
 
 #include <algorithm>
 #include <cstring>
+#include <limits>
+
+#if defined(_WIN32)
+#define DVL_HD_ARCHIVE_WIN32
+#define WIN32_LEAN_AND_MEAN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__unix__) || defined(__APPLE__)
+#define DVL_HD_ARCHIVE_PREAD
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 #ifdef USE_SDL3
 #include <SDL3/SDL.h>
@@ -11,6 +25,7 @@
 
 #include <zlib.h>
 
+#include "utils/file_util.h"
 #include "utils/log.hpp"
 
 namespace devilution::hd {
@@ -49,28 +64,112 @@ bool Inflate(const uint8_t *in, size_t inSize, std::vector<uint8_t> &out, size_t
 
 } // namespace
 
-Archive::~Archive()
-{
-	if (file_ == nullptr) return;
-#ifdef USE_SDL3
-	SDL_CloseIO(static_cast<SDL_IOStream *>(file_));
+/**
+ * Positional reads: each read says where it reads, nothing is shared between reads, so threads read at once without a lock (and a
+ * read never sees another's buffered bytes: the header is read anew by Unchanged).
+ */
+class Archive::File {
+public:
+	~File()
+	{
+#if defined(DVL_HD_ARCHIVE_WIN32)
+		if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+#elif defined(DVL_HD_ARCHIVE_PREAD)
+		if (fd_ >= 0) close(fd_);
 #else
-	SDL_RWclose(static_cast<SDL_RWops *>(file_));
+		if (rw_ != nullptr) {
+#ifdef USE_SDL3
+			SDL_CloseIO(rw_);
+#else
+			SDL_RWclose(rw_);
 #endif
-}
+		}
+#endif
+	}
+
+	bool Open(const std::string &path)
+	{
+#if defined(DVL_HD_ARCHIVE_WIN32)
+		const auto wide = ToWideChar(path);
+		if (wide == nullptr) return false;
+		handle_ = CreateFileW(wide.get(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		return handle_ != INVALID_HANDLE_VALUE;
+#elif defined(DVL_HD_ARCHIVE_PREAD)
+		int flags = O_RDONLY;
+#ifdef O_CLOEXEC
+		flags |= O_CLOEXEC;
+#endif
+		fd_ = open(path.c_str(), flags);
+		return fd_ >= 0;
+#else
+#ifdef USE_SDL3
+		rw_ = SDL_IOFromFile(path.c_str(), "rb");
+#else
+		rw_ = SDL_RWFromFile(path.c_str(), "rb");
+#endif
+		return rw_ != nullptr;
+#endif
+	}
+
+	bool ReadAt(uint64_t offset, void *out, size_t size)
+	{
+		auto *dst = static_cast<uint8_t *>(out);
+#if defined(DVL_HD_ARCHIVE_WIN32)
+		while (size > 0) {
+			OVERLAPPED at = {};
+			at.Offset = static_cast<DWORD>(offset);
+			at.OffsetHigh = static_cast<DWORD>(offset >> 32);
+			const DWORD want = static_cast<DWORD>(std::min<size_t>(size, 1U << 30));
+			DWORD got = 0;
+			if (ReadFile(handle_, dst, want, &got, &at) == 0 || got == 0) return false;
+			dst += got;
+			offset += got;
+			size -= got;
+		}
+		return true;
+#elif defined(DVL_HD_ARCHIVE_PREAD)
+		if (offset > static_cast<uint64_t>(std::numeric_limits<off_t>::max())) return false; // a 32-bit off_t
+		while (size > 0) {
+			const ssize_t got = pread(fd_, dst, size, static_cast<off_t>(offset));
+			if (got <= 0) return false;
+			dst += got;
+			offset += static_cast<uint64_t>(got);
+			size -= static_cast<size_t>(got);
+		}
+		return true;
+#else
+		const std::lock_guard<std::mutex> lock(mutex_);
+#ifdef USE_SDL3
+		if (SDL_SeekIO(rw_, static_cast<Sint64>(offset), SDL_IO_SEEK_SET) < 0) return false;
+		return SDL_ReadIO(rw_, dst, size) == size;
+#else
+		if (SDL_RWseek(rw_, static_cast<Sint64>(offset), RW_SEEK_SET) < 0) return false;
+		return SDL_RWread(rw_, dst, 1, size) == size;
+#endif
+#endif
+	}
+
+private:
+#if defined(DVL_HD_ARCHIVE_WIN32)
+	HANDLE handle_ = INVALID_HANDLE_VALUE;
+#elif defined(DVL_HD_ARCHIVE_PREAD)
+	int fd_ = -1;
+#else
+#ifdef USE_SDL3
+	SDL_IOStream *rw_ = nullptr;
+#else
+	SDL_RWops *rw_ = nullptr;
+#endif
+	std::mutex mutex_;
+#endif
+};
+
+Archive::Archive() = default;
+Archive::~Archive() = default;
 
 bool Archive::ReadAt(uint64_t offset, void *out, size_t size) const
 {
-	const std::lock_guard<std::mutex> lock(fileMutex_);
-#ifdef USE_SDL3
-	auto *io = static_cast<SDL_IOStream *>(file_);
-	if (SDL_SeekIO(io, static_cast<Sint64>(offset), SDL_IO_SEEK_SET) < 0) return false;
-	return SDL_ReadIO(io, out, size) == size;
-#else
-	auto *rw = static_cast<SDL_RWops *>(file_);
-	if (SDL_RWseek(rw, static_cast<Sint64>(offset), RW_SEEK_SET) < 0) return false;
-	return SDL_RWread(rw, out, 1, size) == size;
-#endif
+	return file_ != nullptr && file_->ReadAt(offset, out, size);
 }
 
 bool Archive::ReadHeader(uint32_t &generation, uint64_t &indexOffset, uint32_t &indexStored, uint32_t &indexRaw) const
@@ -96,13 +195,10 @@ bool Archive::ReadHeader(uint32_t &generation, uint64_t &indexOffset, uint32_t &
 bool Archive::Open(const std::string &path)
 {
 	path_ = path;
-#ifdef USE_SDL3
-	file_ = SDL_IOFromFile(path.c_str(), "rb");
-#else
-	file_ = SDL_RWFromFile(path.c_str(), "rb");
-#endif
-	if (file_ == nullptr) {
-		LogError("HD: can't open {}: {}", path, SDL_GetError());
+	file_ = std::make_unique<File>();
+	if (!file_->Open(path)) {
+		file_ = nullptr;
+		LogError("HD: can't open {}", path);
 		return false;
 	}
 	uint32_t stored = 0, raw = 0;
@@ -152,17 +248,15 @@ bool Archive::Open(const std::string &path)
 bool Archive::Unchanged() const
 {
 	if (file_ == nullptr) return false;
-	// read the header through a handle of its own: the open one's buffer may still hold what it read before
+	// read the header through a handle of its own: where reads go through SDL, the open one's buffer may still hold what it read
+	// before; and after a compact the path names a new file, which is what counts
 	Archive fresh;
 	fresh.path_ = path_;
-#ifdef USE_SDL3
-	fresh.file_ = SDL_IOFromFile(path_.c_str(), "rb");
-#else
-	fresh.file_ = SDL_RWFromFile(path_.c_str(), "rb");
-#endif
+	fresh.file_ = std::make_unique<File>();
+	if (!fresh.file_->Open(path_)) return false;
 	uint32_t generation = 0, stored = 0, raw = 0;
 	uint64_t offset = 0;
-	return fresh.file_ != nullptr && fresh.ReadHeader(generation, offset, stored, raw) && generation == generation_ && offset == indexOffset_;
+	return fresh.ReadHeader(generation, offset, stored, raw) && generation == generation_ && offset == indexOffset_;
 }
 
 std::string_view Archive::String(uint32_t offset, uint32_t length) const

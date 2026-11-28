@@ -5,12 +5,14 @@
  * names they have in a pack folder. tools/hdpak.py writes them and documents the layout; this reads them.
  *
  * Entries are found by name in the index, which is kept in memory as read (about 40 bytes an entry). Blobs are read on
- * demand. An archive is written by appending and then switching its header to a new index, so a game that has it open
+ * demand, with positional reads (pread, or ReadFile at an offset on Windows), so any number of threads read at once without a lock;
+ * elsewhere through SDL under a mutex. An archive is written by appending and then switching its header to a new index, so a game that has it open
  * keeps reading the index it opened with, whose blobs stay where they are until the archive is compacted (a new file).
  */
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -35,7 +37,7 @@ public:
 		std::string_view meta; ///< an image's PNG tEXt chunks, "key\0value\0..."
 	};
 
-	Archive() = default;
+	Archive();
 	Archive(const Archive &) = delete;
 	Archive &operator=(const Archive &) = delete;
 	~Archive();
@@ -68,13 +70,15 @@ private:
 		uint32_t count;
 	};
 
+	/** An open file read at offsets (hd_archive.cpp: pread, ReadFile, or SDL under a mutex). */
+	class File;
+
 	bool ReadAt(uint64_t offset, void *out, size_t size) const;
 	bool ReadHeader(uint32_t &generation, uint64_t &indexOffset, uint32_t &indexStored, uint32_t &indexRaw) const;
 	[[nodiscard]] std::string_view String(uint32_t offset, uint32_t length) const;
 
 	std::string path_;
-	void *file_ = nullptr; ///< SDL_RWops / SDL_IOStream
-	mutable std::mutex fileMutex_;
+	std::unique_ptr<File> file_;
 	uint32_t generation_ = 0;
 	uint64_t indexOffset_ = 0;
 	std::vector<uint8_t> index_;

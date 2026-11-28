@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -3349,6 +3350,36 @@ TEST(HdTest, ThePackCanBeSetInTheIni)
 	unsetenv("DEVILUTIONX_HD_PACK");
 	EXPECT_EQ(hd::PackPath(), "");
 	EXPECT_EQ(hd::PackScale(), 1);
+	fs::remove_all(dir);
+}
+
+TEST(HdTest, AnArchiveIsReadFromManyThreadsAtOnce)
+{
+	const fs::path dir = fs::temp_directory_path() / "devilutionx_hd_archive_threads";
+	fs::remove_all(dir);
+	fs::create_directories(dir);
+	std::vector<ArchiveFile> files;
+	for (int i = 0; i < 64; ++i)
+		files.push_back(ZlibFile("t/" + std::to_string(i) + ".txt", std::string(1000 + i * 37, static_cast<char>('a' + i % 26)) + std::to_string(i)));
+	WriteArchive(dir / "t.hdpk", files);
+	hd::Archive archive;
+	ASSERT_TRUE(archive.Open((dir / "t.hdpk").string()));
+	std::atomic<int> wrong { 0 };
+	std::vector<std::thread> threads;
+	for (int t = 0; t < 8; ++t) {
+		threads.emplace_back([&, t]() {
+			std::vector<uint8_t> bytes;
+			hd::Archive::Entry entry;
+			for (int round = 0; round < 200; ++round) {
+				const int i = (round * 7 + t * 13) % 64;
+				const std::string want = std::string(1000 + i * 37, static_cast<char>('a' + i % 26)) + std::to_string(i);
+				if (!archive.Find("t/" + std::to_string(i) + ".txt", entry) || !archive.Read(entry, bytes) || std::string(bytes.begin(), bytes.end()) != want) ++wrong;
+			}
+		});
+	}
+	for (std::thread &thread : threads)
+		thread.join();
+	EXPECT_EQ(wrong, 0);
 	fs::remove_all(dir);
 }
 
