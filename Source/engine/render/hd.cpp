@@ -13,6 +13,7 @@
 #include <deque>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -27,6 +28,7 @@
 #include <SDL.h>
 #endif
 
+#include "engine/render/hd_archive.hpp"
 #include "utils/file_util.h"
 #include "utils/log.hpp"
 #include "utils/png.h"
@@ -118,7 +120,11 @@ struct NamedTrn {
 };
 
 bool Active = false;
-std::string PackDir;
+std::string PackDir;   ///< DEVILUTIONX_HD_PACK: a folder, or one archive (OpenPack)
+bool LooseFiles = true; ///< the pack is a folder: its loose files are read, and win over its archives
+/** The pack's archives (*.hdpk in its folder, in name order, or the one it is): a later one's entries replace an earlier one's. */
+std::vector<std::unique_ptr<Archive>> Archives;
+std::string ArchivesOf; ///< the pack the archives were opened for (OpenPack keeps them while they are unchanged)
 int Scale = 4;
 std::unordered_map<std::string, std::string> Manifest; ///< image file -> palette file
 std::unordered_map<std::string, int> MonsterLights;   ///< "monsters/<path>[@<trn>]" -> light radius ("light" lines of hd.txt)
@@ -199,11 +205,12 @@ struct HeldKit {
 struct HeroArtFolder {
 	std::string prefix; ///< what the pack files of its frames start with: "held/", "pairs/"
 	std::string dir;    ///< <dir>/<key>/render.json and its frames; empty: none
+	std::string rel;    ///< the same folder in the pack's archives ("held"); empty when the hd.txt line (or variable) gave an absolute path
 	std::unordered_map<std::string, std::unordered_map<std::string, HeldKit>> kits; ///< "c057", "c057~doombringer", "c057+c083" -> sprite path -> its kit
 	uint32_t kitCount = 0;
 };
-HeroArtFolder HeldFolder { "held/" };  ///< DEVILUTIONX_HD_HELD
-HeroArtFolder PairFolder { "pairs/" }; ///< DEVILUTIONX_HD_PAIRS
+HeroArtFolder HeldFolder { "held/", {}, {}, {}, 0 };  ///< DEVILUTIONX_HD_HELD
+HeroArtFolder PairFolder { "pairs/", {}, {}, {}, 0 }; ///< DEVILUTIONX_HD_PAIRS
 std::string HeldPalette;     ///< the reference palette of held art whose weapon set's frame the pack lacks: that of the pack's hero art
 uint32_t HeldGeneration = 1; ///< changes whenever a pack is loaded
 size_t HeldImageCount = 0;   ///< images of held art: not in the manifest, so Images is kept that much larger than the manifest (ImageId)
@@ -481,6 +488,114 @@ std::string PathOf(const std::string &file)
 	return PackDir + "/" + file;
 }
 
+bool IsAbsolutePath(std::string_view path)
+{
+	return !path.empty() && (path[0] == '/' || path[0] == '\\' || (path.size() > 1 && path[1] == ':'));
+}
+
+/** The name of the pack file ``file`` in the pack's archives (held and pair art under their folder's), or nothing: it is only ever loose. */
+std::string ArchiveName(const std::string &file)
+{
+	for (const HeroArtFolder *folder : { &HeldFolder, &PairFolder }) {
+		if (folder->dir.empty() || file.compare(0, folder->prefix.size(), folder->prefix) != 0) continue;
+		return folder->rel.empty() ? std::string() : folder->rel + file.substr(folder->prefix.size() - 1);
+	}
+	return file;
+}
+
+/** Whether the pack file ``file`` may be a loose file (the pack is a folder, or it is in a folder given by an absolute path). */
+bool LooseAllowed(const std::string &file)
+{
+	return LooseFiles || ArchiveName(file).empty();
+}
+
+/** The entry of the pack file ``file`` in the latest archive that names it; false when none does, or that one removed it. */
+bool ArchiveEntry(const std::string &file, const Archive *&archive, Archive::Entry &entry)
+{
+	if (Archives.empty()) return false;
+	const std::string name = ArchiveName(file);
+	if (name.empty()) return false;
+	for (auto it = Archives.rbegin(); it != Archives.rend(); ++it) {
+		if (!(*it)->Find(name, entry)) continue;
+		if (entry.codec == Archive::Removed) return false;
+		archive = it->get();
+		return true;
+	}
+	return false;
+}
+
+/** The bytes of the pack file ``file`` (hd.txt, a palette, a render.json): the loose file's when there is one, else the archives'. */
+bool ReadPackFile(const std::string &file, std::vector<uint8_t> &out)
+{
+	if (LooseAllowed(file)) {
+		std::ifstream in(PathOf(file), std::ios::binary);
+		if (in) {
+			out.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+			return true;
+		}
+	}
+	const Archive *archive = nullptr;
+	Archive::Entry entry;
+	return ArchiveEntry(file, archive, entry) && archive->Read(entry, out);
+}
+
+/**
+ * Sets PackDir and opens the pack's archives. DEVILUTIONX_HD_PACK names a folder (its loose files, and its *.hdpk archives in name order
+ * under them) or one archive (nothing loose). Archives open for the same pack are kept while they are unchanged on disk (PackScale, Init).
+ */
+void OpenPack(const std::string &pack)
+{
+	std::vector<std::string> files;
+	LooseFiles = DirectoryExists(pack);
+	PackDir = pack;
+	if (LooseFiles) {
+		while (PackDir.size() > 1 && (PackDir.back() == '/' || PackDir.back() == '\\'))
+			PackDir.pop_back();
+		for (const std::string &name : ListFiles(PackDir.c_str())) {
+			if (name.size() > 5 && name.compare(name.size() - 5, 5, ".hdpk") == 0 && name[0] != '.') files.push_back(PackDir + "/" + name);
+		}
+		std::sort(files.begin(), files.end());
+	} else {
+		files.push_back(pack);
+	}
+	bool same = ArchivesOf == pack && Archives.size() == files.size();
+	for (size_t i = 0; same && i < files.size(); ++i)
+		same = Archives[i]->Path() == files[i] && Archives[i]->Unchanged();
+	if (same) return;
+	Archives.clear();
+	ArchivesOf = pack;
+	for (const std::string &file : files) {
+		auto archive = std::make_unique<Archive>();
+		if (!archive->Open(file)) continue;
+		LogInfo("HD: archive {} ({} entries)", file, archive->Size());
+		Archives.push_back(std::move(archive));
+	}
+}
+
+/** An image's pixels from an Img8 archive entry, kept as StorePixels keeps a surface's. */
+void StoreImg8(const Img8Image &pic, bool keepClear, HdImage &img)
+{
+	img.w = static_cast<int>(pic.width);
+	img.h = static_cast<int>(pic.height);
+	img.px.clear();
+	img.idx.clear();
+	img.colours.clear();
+	std::vector<uint32_t> colours(pic.colourCount);
+	for (size_t i = 0; i < colours.size(); ++i) {
+		const uint32_t c = pic.Colour(i);
+		colours[i] = keepClear || (c >> 24) != 0 ? c : 0U;
+	}
+	const size_t n = static_cast<size_t>(pic.width) * pic.height;
+	if (IndexedArt) {
+		img.colours = std::move(colours);
+		img.idx.assign(pic.indices, pic.indices + n);
+		return;
+	}
+	img.px.resize(n);
+	for (size_t i = 0; i < n; ++i)
+		img.px[i] = colours[pic.indices[i]];
+}
+
 /**
  * Whether ``file`` is one of the pack's images, and the reference palette it was made against: the manifest's, or held (or pair) art that
  * its folder's render.json lists ("held/<key>/plrgfx/<path>/<group>.<frame>.png"), with the palette of the weapon set's frame it stands in for.
@@ -512,34 +627,72 @@ bool PackImage(const std::string &file, std::string &palette)
 	return true;
 }
 
-bool LoadImage(const std::string &file, const std::string &palette, HdImage &img)
+/** A PNG from a file (``path``) or from memory (``data``). */
+SDL_Surface *LoadPng(const std::string &path, const std::vector<uint8_t> *data)
 {
-	const std::string path = PathOf(file);
 	// open and close the file here: IMG_LoadPNG(path) leaves its file open, one descriptor per HD image, until the process
 	// runs out of them (Peter, 2026-11-01: crashed in the dungeon with "Too many open files")
 #ifdef USE_SDL3
-	SDL_IOStream *src = SDL_IOFromFile(path.c_str(), "rb");
+	SDL_IOStream *src = data != nullptr ? SDL_IOFromConstMem(data->data(), data->size()) : SDL_IOFromFile(path.c_str(), "rb");
 	SDL_Surface *loaded = src != nullptr ? IMG_LoadPNG_IO(src) : nullptr;
 	if (src != nullptr) SDL_CloseIO(src);
 #else
-	SDL_RWops *src = SDL_RWFromFile(path.c_str(), "rb");
+	SDL_RWops *src = data != nullptr ? SDL_RWFromConstMem(data->data(), static_cast<int>(data->size())) : SDL_RWFromFile(path.c_str(), "rb");
 	SDL_Surface *loaded = src != nullptr ? IMG_LoadPNG_RW(src) : nullptr;
 	if (src != nullptr) SDL_RWclose(src);
 #endif
-	if (loaded == nullptr) {
-		LogError("HD: can't load {}: {}", path, SDL_GetError());
-		return false;
+	return loaded;
+}
+
+/** Loads the pixels of the pack image ``file``: its loose file when there is one, else its archive entry. */
+bool LoadImage(const std::string &file, const std::string &palette, HdImage &img)
+{
+	const bool keepClear = file.compare(0, 3, "fx/") == 0;
+	const std::string path = PathOf(file);
+	SDL_Surface *loaded = nullptr;
+	if (LooseAllowed(file) && FileExists(path)) {
+		loaded = LoadPng(path, nullptr);
+		if (loaded == nullptr) {
+			LogError("HD: can't load {}: {}", path, SDL_GetError());
+			return false;
+		}
+	} else {
+		const Archive *archive = nullptr;
+		Archive::Entry entry;
+		std::vector<uint8_t> bytes;
+		if (!ArchiveEntry(file, archive, entry)) {
+			LogError("HD: can't load {}: the pack has no such file", file);
+			return false;
+		}
+		if (!archive->Read(entry, bytes)) return false;
+		if (entry.codec == Archive::Img8) {
+			Img8Image pic;
+			if (!ParseImg8(bytes, pic)) {
+				LogError("HD: can't load {} from {}: malformed", file, archive->Path());
+				return false;
+			}
+			StoreImg8(pic, keepClear, img);
+		} else {
+			loaded = LoadPng(path, &bytes);
+			if (loaded == nullptr) {
+				LogError("HD: can't load {} from {}: {}", file, archive->Path(), SDL_GetError());
+				return false;
+			}
+		}
 	}
-	SDL_Surface *argb = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_ARGB8888, 0);
-	SDL_FreeSurface(loaded);
-	if (argb == nullptr) return false;
-	img.w = argb->w;
-	img.h = argb->h;
-	StorePixels(argb, file.compare(0, 3, "fx/") == 0, img);
-	SDL_FreeSurface(argb);
+	if (loaded != nullptr) {
+		SDL_Surface *argb = SDL_ConvertSurfaceFormat(loaded, SDL_PIXELFORMAT_ARGB8888, 0);
+		SDL_FreeSurface(loaded);
+		if (argb == nullptr) return false;
+		img.w = argb->w;
+		img.h = argb->h;
+		StorePixels(argb, keepClear, img);
+		SDL_FreeSurface(argb);
+	}
 	if (!palette.empty()) {
-		std::ifstream pal(PackDir + "/" + palette, std::ios::binary);
-		img.hasRef = static_cast<bool>(pal.read(reinterpret_cast<char *>(img.ref.data()), img.ref.size()));
+		std::vector<uint8_t> pal;
+		img.hasRef = ReadPackFile(palette, pal) && pal.size() >= img.ref.size();
+		if (img.hasRef) std::copy_n(pal.begin(), img.ref.size(), img.ref.begin());
 	}
 	img.reach.clear();
 	img.propSource.clear();
@@ -588,13 +741,25 @@ void LetGo(uint32_t id)
 
 std::string ReadPngText(const std::string &path, std::string_view keyword);
 
+/** The tEXt chunk ``keyword`` of the pack image ``file``: its loose file's, else its archive entry's (kept in the archive's index). */
+std::string PackText(const std::string &file, std::string_view keyword)
+{
+	if (LooseAllowed(file)) {
+		const std::string path = PathOf(file);
+		if (FileExists(path)) return ReadPngText(path, keyword);
+	}
+	const Archive *archive = nullptr;
+	Archive::Entry entry;
+	return ArchiveEntry(file, archive, entry) ? Archive::Text(entry, keyword) : std::string();
+}
+
 /**
  * A sprite frame's art may cover more than the sprite (a raised sword's tip above it, a foot below): its tEXt chunk "hdbox" =
  * "<dx> <dy> <w> <h>" is then the rectangle the picture covers, in original pixels relative to the sprite's top-left.
  */
 void ReadBox(const std::string &file, HdImage &img)
 {
-	const std::string text = ReadPngText(PathOf(file), "hdbox");
+	const std::string text = PackText(file, "hdbox");
 	if (text.empty()) return;
 	constexpr int Most = 4096;
 	int dx = 0, dy = 0, w = 0, h = 0;
@@ -713,7 +878,7 @@ uint32_t FxOf(uint32_t image, const SpriteEntry &entry)
 	}
 	if (Manifest.count(file) == 0) return 0;
 	int dx = 0, dy = 0, w = 0, h = 0;
-	std::istringstream words(ReadPngText(PackDir + "/" + file, "hdfx"));
+	std::istringstream words(PackText(file, "hdfx"));
 	if (!(words >> dx >> dy >> w >> h) || w <= 0 || h <= 0) {
 		LogError("HD: {} doesn't say where it goes (tEXt hdfx)", file);
 		return 0;
@@ -1936,7 +2101,10 @@ int PackScale()
 {
 	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
 	if (!Supported || dir == nullptr || *dir == '\0') return 1;
-	std::ifstream index(std::string(dir) + "/hd.txt");
+	OpenPack(dir);
+	std::vector<uint8_t> text;
+	if (!ReadPackFile("hd.txt", text)) return 1;
+	std::istringstream index(std::string(text.begin(), text.end()));
 	std::string line;
 	while (std::getline(index, line)) {
 		std::istringstream words(line);
@@ -2081,13 +2249,24 @@ private:
 void LoadHeroArt(HeroArtFolder &folder, std::string line, const char *override)
 {
 	folder.dir.clear();
+	folder.rel.clear();
 	folder.kits.clear();
 	folder.kitCount = 0;
 	if (const char *dir = std::getenv(override); dir != nullptr) line = dir;
 	if (line.empty()) return;
-	folder.dir = line[0] == '/' || (line.size() > 1 && line[1] == ':') ? line : PackDir + "/" + line;
+	const bool absolute = IsAbsolutePath(line);
+	folder.dir = absolute ? line : PackDir + "/" + line;
 	while (folder.dir.size() > 1 && (folder.dir.back() == '/' || folder.dir.back() == '\\'))
 		folder.dir.pop_back();
+	if (!absolute) {
+		folder.rel = line;
+		while (folder.rel.compare(0, 2, "./") == 0)
+			folder.rel.erase(0, 2);
+		while (!folder.rel.empty() && (folder.rel.back() == '/' || folder.rel.back() == '\\'))
+			folder.rel.pop_back();
+		if (folder.rel.empty() || folder.rel == ".") folder.dir.clear(); // the pack itself isn't a folder of hero art
+		if (folder.dir.empty()) return;
+	}
 	if (HeldPalette.empty()) {
 		for (const auto &[file, palette] : Manifest) {
 			if (file.compare(0, 14, "sprite/plrgfx/") != 0) continue;
@@ -2096,11 +2275,19 @@ void LoadHeroArt(HeroArtFolder &folder, std::string line, const char *override)
 		}
 	}
 	uint32_t items = 0;
-	for (const std::string &key : ListDirectories(folder.dir.c_str())) {
+	std::vector<std::string> keys;
+	if (LooseFiles || absolute) keys = ListDirectories(folder.dir.c_str());
+	if (!absolute) {
+		for (const auto &archive : Archives)
+			archive->ListDirectories(folder.rel, keys);
+	}
+	std::sort(keys.begin(), keys.end());
+	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+	for (const std::string &key : keys) {
 		if (key.empty() || key[0] == '.' || key.find_first_of("/\\") != std::string::npos) continue;
-		std::ifstream in(folder.dir + "/" + key + "/render.json", std::ios::binary);
-		if (!in) continue; // unfinished (the renderer writes render.json last)
-		const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+		std::vector<uint8_t> json;
+		if (!ReadPackFile(folder.prefix + key + "/render.json", json)) continue; // unfinished (the renderer writes render.json last)
+		const std::string text(json.begin(), json.end());
 		std::unordered_map<std::string, HeldKit> kits;
 		if (!HeldJson(text).Read(kits)) {
 			LogError("HD: can't read {}/{}/render.json", folder.dir, key);
@@ -2121,12 +2308,13 @@ void Init()
 {
 	const char *dir = std::getenv("DEVILUTIONX_HD_PACK");
 	if (!Supported || dir == nullptr || *dir == '\0') return;
-	PackDir = dir;
-	std::ifstream index(PackDir + "/hd.txt");
-	if (!index) {
+	OpenPack(dir);
+	std::vector<uint8_t> text;
+	if (!ReadPackFile("hd.txt", text)) {
 		LogError("HD: no hd.txt in {}", PackDir);
 		return;
 	}
+	std::istringstream index(std::string(text.begin(), text.end()));
 	std::string line;
 	std::string held;
 	std::string pairs;
@@ -2216,9 +2404,11 @@ void Init()
 	{
 		const std::lock_guard<std::mutex> lock(ImagesMutex);
 		HeldFolder.dir.clear();
+		HeldFolder.rel.clear();
 		HeldFolder.kits.clear();
 		HeldFolder.kitCount = 0;
 		PairFolder.dir.clear();
+		PairFolder.rel.clear();
 		PairFolder.kits.clear();
 		PairFolder.kitCount = 0;
 		HeldBy.clear();
@@ -2256,7 +2446,7 @@ void Init()
 		ClxFreeHook = [](const uint8_t *data) { ForgetSprites(data); };
 		std::atexit([]() { ClxFreeHook = nullptr; }); // sprite data freed at exit may outlive the maps here
 	}
-	LogInfo("HD: pack {} ({} images, {}x{}{})", PackDir, Manifest.size(), Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
+	LogInfo("HD: pack {} ({} images, {} archives{}, {}x{}{})", PackDir, Manifest.size(), Archives.size(), LooseFiles ? " under its loose files" : "", Scale, FreeSilhouette ? ", free silhouettes" : "", PixelShading ? ", shaded per pixel" : "");
 	LogInfo("HD: images {}, idle art bounded at {} MB, {}", UnloadArt ? "let go of when unused" : "kept once loaded", BudgetBytes >> 20,
 	    IndexedArt ? "8-bit where 256 colours do" : "all in full colour");
 }
@@ -2594,7 +2784,7 @@ void ReadProps(std::string_view name, int rows)
 		char *end = nullptr;
 		const unsigned long pillar = std::strtoul(stem, &end, 10);
 		if (end == stem || pillar >= 65536 || (*end != '@' && std::strcmp(end, ".png") != 0)) continue;
-		const std::string text = ReadPngText(PathOf(file), "hdprop");
+		const std::string text = PackText(file, "hdprop");
 		Prop prop;
 		if (!ParseProp(text, rows, prop)) {
 			LogError("HD: {} doesn't say where it goes (tEXt hdprop \"{}\")", file, text);

@@ -46,7 +46,15 @@
  *     of a monster's art is darker than its own unlit value times that strength. It fades out over light levels 12-15, so a monster lit to
  *     black stays black. Off without the line.
  *
- * Pack layout (a folder, given by DEVILUTIONX_HD_PACK):
+ * Archives: DEVILUTIONX_HD_PACK may name one archive (".hdpk", written by tools/hdpak.py) instead of a folder: the same files, under the
+ * same names, in one file (the images as 8-bit indexed pictures where they have 256 colours or fewer, their tEXt chunks in the archive's
+ * index). A folder may hold archives too (every *.hdpk in it, read in name order: a later one's entries replace an earlier one's, and its
+ * tombstones remove them), and its loose files win over all of them, so art can be dropped into a packed pack without repacking. A held or
+ * pairs folder named by a relative path is looked for in the archives under that path as well; one named by an absolute path is loose only.
+ * Archives are written by appending, then switching their header to a new index: a running game keeps the index it opened with until the
+ * pack is loaded again (loose files are read again whenever an image is, as before).
+ *
+ * Pack layout (a folder, given by DEVILUTIONX_HD_PACK, or an archive of the same files):
  *   hd.txt                                    "scale N", then one "image <file> <palette file>" per line, and optionally
  *                                             "silhouette free" (see below)
  *   sprite/<mpq path without ext>/<group>.<frame>.png   a CEL/CL2 frame, any size (sampled proportionally)

@@ -9,6 +9,8 @@ else()
   dependency_options("zlib" DEVILUTIONX_SYSTEM_ZLIB ON DEVILUTIONX_STATIC_ZLIB)
   if(NOT DEVILUTIONX_SYSTEM_ZLIB)
     add_subdirectory(3rdParty/zlib)
+  elseif(NOT TARGET ZLIB::ZLIB)
+    find_package(ZLIB REQUIRED) # HD pack archives (hd_archive.cpp)
   endif()
 endif()
 
